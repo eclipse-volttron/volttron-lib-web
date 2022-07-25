@@ -2,8 +2,8 @@ import logging
 import requests
 from urllib.parse import urlparse, urljoin
 
-from volttron.platform import jsonapi
-from volttron.platform.certs import Certs
+from volttron.utils import jsonapi
+from volttron.utils.certs import Certs
 
 _log = logging.getLogger(__name__)
 
