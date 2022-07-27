@@ -9,14 +9,13 @@ import jwt
 from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNotFound
 from passlib.hash import argon2
 from watchdog_gevent import Observer
+from werkzeug import Response
 
-from volttron.platform import get_home
-from volttron.platform.agent.web import Response
-from volttron.utils import VolttronHomeFileReloader
+from volttron.utils.context import ClientContext
+from volttron.utils.filewatch import VolttronHomeFileReloader
 from volttron.utils.persistance import PersistentDict
 
 _log = logging.getLogger(__name__)
-
 
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
 __TEMPLATE_DIR__ = os.path.join(__PACKAGE_DIR__, "templates")
@@ -50,12 +49,12 @@ class AuthenticateEndpoints(object):
         self._observer = Observer()
         self._observer.schedule(
             VolttronHomeFileReloader("web-users.json", self.reload_userdict),
-            get_home()
+            ClientContext.get_volttron_home()
         )
         self._observer.start()
 
     def reload_userdict(self):
-        webuserpath = os.path.join(get_home(), 'web-users.json')
+        webuserpath = os.path.join(ClientContext.get_volttron_home(), 'web-users.json')
         self._userdict = PersistentDict(webuserpath)
 
     def get_routes(self):
@@ -181,7 +180,7 @@ class AuthenticateEndpoints(object):
         :return:
         """
         current_access_token = data.get('current_access_token')
-        from volttron.platform.web import get_bearer, get_user_claim_from_bearer, NotAuthorized
+        from ..web import get_bearer, get_user_claim_from_bearer, NotAuthorized
         try:
             current_refresh_token = get_bearer(env)
             claims = get_user_claim_from_bearer(current_refresh_token, web_secret_key=self._web_secret_key,

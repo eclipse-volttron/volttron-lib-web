@@ -39,8 +39,7 @@
 from http.cookies import SimpleCookie
 import logging
 
-from datetime import datetime
-from volttron.platform import get_platform_config
+from volttron.utils.context import ClientContext
 
 try:
     import jwt
@@ -87,9 +86,7 @@ def get_user_claims(env, ssl_public_key):
     return jwt.decode(bearer, encode_key, algorithm=algorithm)
 
 
-
 def __get_key_and_algorithm__(env, ssl_public_key):
-    config = get_platform_config()
     publickey = env.get("WEB_PUBLIC_KEY")
     if publickey is not None or ssl_public_key is not None:
         algorithm = 'RS256'
@@ -97,7 +94,7 @@ def __get_key_and_algorithm__(env, ssl_public_key):
         algorithm = 'HS256'
 
     if algorithm == 'HS256':
-        if config.get('web-secret-key') is None:
+        if ClientContext.get_config_param('web-secret-key') is None:
             raise ValueError("invalid configuration detected web_secret_key must be set!")
 
     if algorithm == 'RS256' and ssl_public_key is None:
@@ -105,7 +102,7 @@ def __get_key_and_algorithm__(env, ssl_public_key):
     elif algorithm == 'RS256' and ssl_public_key:
         encode_key = ssl_public_key
     else:
-        encode_key = config.get('web-secret-key')
+        encode_key = ClientContext.get_config_param('web-secret-key')
 
     return algorithm, encode_key
 
