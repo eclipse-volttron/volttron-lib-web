@@ -35,6 +35,7 @@
 # BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
 # under Contract DE-AC05-76RL01830
 # }}}
+from __future__ import annotations
 
 import base64
 import logging
@@ -42,6 +43,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+from pprint import pformat
 from urllib.parse import urlparse, parse_qs
 import zlib
 from collections import defaultdict
@@ -52,6 +54,8 @@ import jwt
 from cryptography.hazmat.primitives import serialization
 from gevent import Greenlet
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from volttron.types import ServiceInterface
+from volttron.types.server_config import ServerConfig
 from werkzeug import Response
 
 from ws4py.server.geventserver import WSGIServer
@@ -104,49 +108,56 @@ tplenv = Environment(
 )
 
 
-class PlatformWebService(Agent):
+class PlatformWebService(ServiceInterface, Agent):
     """The service that is responsible for managing and serving registered pages
 
     Agents can register either a directory of files to serve or an rpc method
     that will be called during the request process.
     """
 
-    def __init__(self, serverkey, identity, address, bind_web_address,
-                 volttron_central_address=None, volttron_central_rmq_address=None,
-                 web_ssl_key=None, web_ssl_cert=None, web_secret_key=None, **kwargs):
+    def __init__(self, server_config: ServerConfig, **kwargs):
+                 # serverkey, identity, address, bind_web_address,
+                 # volttron_central_address=None, volttron_central_rmq_address=None,
+                 # web_ssl_key=None, web_ssl_cert=None, web_secret_key=None, **kwargs):
         """
         Initialize the configuration of the base web service integration within the platform.
 
         """
-        super(PlatformWebService, self).__init__(identity, address, **kwargs)
+        bind_web_address = kwargs.pop("bind-web-address")
+        self._web_secret_key = kwargs.pop("web-secret-key", None)
+        self._ssl_key = kwargs.pop("ssl-key", None)
+        self._ssl_cert = kwargs.pop("ssl-cert", None)
+        super(PlatformWebService, self).__init__(**kwargs)
 
-        # no matter what we need to have a bind_web_address passed to us.
+        # no matter what we need to have a bind-web-address passed to us.
         if not bind_web_address:
-            raise ValueError("Invalid bind web address.")
+            raise ValueError("bind-web-address not set in server_config.yml")
 
+        _log.debug(pformat(server_config.opts.__dict__))
         self.bind_web_address = bind_web_address
-        self.serverkey = serverkey
+        self.serverkey = server_config.opts.volttron_publickey
         self.instance_name = None
         self.registeredroutes = []
         self.peerroutes = defaultdict(list)
         self.pathroutes = defaultdict(list)
         # These will be used if set rather than the
         # any of the internal agent's certificates
-        self.web_ssl_key = web_ssl_key
-        self.web_ssl_cert = web_ssl_cert
-        self._web_secret_key = web_secret_key
+        # self.web_ssl_key = web_ssl_key
+        # self.web_ssl_cert = web_ssl_cert
+        # self._web_secret_key = web_secret_key
 
         # Maps from endpoint to peer.
         self.endpoints = {}
 
-        self.volttron_central_address = volttron_central_address
-        self.volttron_central_rmq_address = volttron_central_rmq_address
+        # self.volttron_central_address = volttron_central_address
+        # self.volttron_central_rmq_address = volttron_central_rmq_address
 
         # If vc is this instance then make the vc address the same as
         # the web address.
-        if not self.volttron_central_address:
-            self.volttron_central_address = bind_web_address
+        # if not self.volttron_central_address:
+        #     self.volttron_central_address = bind_web_address
 
+        # Initialize the mimetypes so that we can guess at the passed mimetype
         if not mimetypes.inited:
             mimetypes.init()
 
@@ -159,6 +170,20 @@ class PlatformWebService(Agent):
         self._server_greenlet: Greenlet = None
         # noinspection PyTypeChecker
         self._admin_endpoints: AdminEndpoints = None
+
+    @property
+    def ssl_cert(self) -> str | None:
+        """
+        Web server ssl certificate path
+        """
+        return self._ssl_cert
+
+    @property
+    def ssl_key(self) -> str | None:
+        """
+        Web server ssl key path
+        """
+        return self._ssl_key
 
     # pylint: disable=unused-argument
     @Core.receiver('onsetup')
@@ -186,9 +211,9 @@ class PlatformWebService(Agent):
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=self._certs.get_cert_public_key(
                                                     ClientContext.get_fq_identity(self.core.identity)))
-        elif self.web_ssl_cert is not None:
+        elif self.ssl_cert is not None:
             claims = get_user_claim_from_bearer(bearer,
-                                                tls_public_key=CertWrapper.get_cert_public_key(self.web_ssl_cert))
+                                                tls_public_key=CertWrapper.get_cert_public_key(self.ssl_cert))
         elif self._web_secret_key is not None:
             claims = get_user_claim_from_bearer(bearer, web_secret_key=self._web_secret_key)
 
@@ -746,8 +771,8 @@ class PlatformWebService(Agent):
         from urllib.parse import urlparse
         parsed = urlparse(self.bind_web_address)
 
-        ssl_key = self.web_ssl_key
-        ssl_cert = self.web_ssl_cert
+        ssl_key = self._ssl_key
+        ssl_cert = self._ssl_cert
         rpc_caller = self.vip.rpc
         if parsed.scheme == 'https':
             # Admin interface is only availble to rmq at present.

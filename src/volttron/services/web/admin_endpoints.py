@@ -208,7 +208,7 @@ class AdminEndpoints(object):
                 # A template with no params.
                 html = template.render()
 
-            return Response(html)
+            return Response(html, content_type="text/html")
 
         template = template_env(env).get_template('index.html')
         resp = template.render()
