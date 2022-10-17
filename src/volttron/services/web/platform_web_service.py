@@ -61,6 +61,7 @@ from werkzeug import Response
 from ws4py.server.geventserver import WSGIServer
 
 from .admin_endpoints import AdminEndpoints
+from .vui_endpoints import VUIEndpoints
 from .authenticate_endpoint import AuthenticateEndpoints
 from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
@@ -170,6 +171,8 @@ class PlatformWebService(ServiceInterface, Agent):
         self._server_greenlet: Greenlet = None
         # noinspection PyTypeChecker
         self._admin_endpoints: AdminEndpoints = None
+        # noinspection PyTypeChecker
+        self._vui_endpoints: VUIEndpoints = None
 
     @property
     def ssl_cert(self) -> str | None:
@@ -820,6 +823,10 @@ class PlatformWebService(ServiceInterface, Agent):
         # or not.
         for rt in self._admin_endpoints.get_routes():
             self.registeredroutes.append(rt)
+
+        # Register VUI endpoints:
+        self._vui_endpoints = VUIEndpoints(self)
+        self.registeredroutes.extend(self._vui_endpoints.get_routes())
 
         # Allow authentication endpoint from any https connection
         if parsed.scheme == 'https':

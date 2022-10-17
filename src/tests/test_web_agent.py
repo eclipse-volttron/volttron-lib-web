@@ -6,18 +6,20 @@ from unittest.mock import MagicMock
 import pytest
 
 from volttron.client.vip.agent import Agent
-from src.volttron.services.web import PlatformWebService
+from volttron.services.web import PlatformWebService
 from volttrontesting.utils import AgentMock
 from volttrontesting.web_utils import get_test_web_env
 
 
 @pytest.fixture()
 def mock_platformweb_service() -> PlatformWebService:
+    kwargs = {'bind-web-address': MagicMock()}
     PlatformWebService.__bases__ = (AgentMock.imitate(Agent, Agent()),)
-    platformweb = PlatformWebService(serverkey=MagicMock(),
+    platformweb = PlatformWebService(server_config=MagicMock(),
+                                     serverkey=MagicMock(),
                                      identity=MagicMock(),
                                      address=MagicMock(),
-                                     bind_web_address=MagicMock())
+                                     **kwargs)
     # rpc_caller = platformweb.vip.rpc
     # platformweb._admin_endpoints = AdminEndpoints(rpc_caller=rpc_caller)
 

@@ -10,6 +10,7 @@ from typing import List, Union
 from werkzeug import Response
 from werkzeug.urls import url_decode
 
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
 from volttron.client.vip.agent.subsystems.query import Query
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
 from .topic_tree import DeviceTree, TopicTree
@@ -34,7 +35,7 @@ class LockError(Exception):
 def endpoint(func):
     @functools.wraps(func)
     def verify_and_dispatch(self, env, data):
-        from src.volttron.services.web import get_bearer
+        from volttron.services.web import get_bearer
         try:
             claims = self._agent.get_user_claims(get_bearer(env))
         except Exception as e:
@@ -256,13 +257,13 @@ class VUIEndpoints:
         query_params = url_decode(env['QUERY_STRING'])
         restart = self._to_bool(query_params.get('restart', 'false'))
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/running/?$', path_info).groups()
-        uuid = self._rpc('control', 'identity_exists', vip_identity, external_platform=platform)
+        uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
         if not uuid:
             return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}), 400,
                             content_type='application/json')
 
         def _agent_running(vip_identity):
-            peerlist = self._rpc('control', 'peerlist', external_platform=platform)
+            peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
             return True if vip_identity in peerlist else False
 
         if request_method == 'GET':
@@ -271,16 +272,16 @@ class VUIEndpoints:
 
         elif request_method == 'PUT':
             if restart:
-                self._rpc('control', 'restart_agent', uuid, external_platform=platform)
+                self._rpc(CONTROL, 'restart_agent', uuid, external_platform=platform)
             else:
                 if _agent_running(vip_identity):
                     return Response(json.dumps({'error': f'Agent: {vip_identity} is already running.'}), 400,
                                     content_type='application/json')
-                self._rpc('control', 'start_agent', uuid, external_platform=platform)
+                self._rpc(CONTROL, 'start_agent', uuid, external_platform=platform)
             return Response(status=204)
 
         elif request_method == 'DELETE':
-            self._rpc('control', 'stop_agent', uuid, external_platform=platform)
+            self._rpc(CONTROL, 'stop_agent', uuid, external_platform=platform)
             return Response(status=204)
 
     @endpoint
@@ -331,15 +332,15 @@ class VUIEndpoints:
             try:
                 if no_config_name:
                     if vip_identity != '-':
-                        setting_list = self._rpc('config.store', 'manage_list_configs', vip_identity,
+                        setting_list = self._rpc(CONFIGURATION_STORE, 'manage_list_configs', vip_identity,
                                                  external_platform=platform)
                         route_dict = self._links(path_info, setting_list)
                         return Response(json.dumps(route_dict), 200, content_type='application/json')
                     else:
-                        list_of_agents = self._rpc('config.store', 'manage_list_stores', external_platform=platform)
+                        list_of_agents = self._rpc(CONFIGURATION_STORE, 'manage_list_stores', external_platform=platform)
                         return Response(json.dumps(list_of_agents), 200, content_type='application/json')
                 elif not no_config_name:
-                    setting_dict = self._rpc('config.store', 'manage_get', vip_identity, config_name,
+                    setting_dict = self._rpc(CONFIGURATION_STORE, 'manage_get', vip_identity, config_name,
                                              external_platform=platform)
                     return Response(json.dumps(setting_dict), 200, content_type='application/json')
             except RemoteError as e:
@@ -356,7 +357,7 @@ class VUIEndpoints:
 
         elif request_method == 'POST' and no_config_name:
             if config_type in ['application/json', 'text/csv', 'text/plain']:
-                setting_list = self._rpc('config.store', 'manage_list_configs', vip_identity,
+                setting_list = self._rpc(CONFIGURATION_STORE, 'manage_list_configs', vip_identity,
                                          external_platform=platform)
                 if config_name in setting_list:
                     e = {'Error': f'Configuration: "{config_name}" already exists for agent: "{vip_identity}"'}
@@ -373,13 +374,13 @@ class VUIEndpoints:
         elif request_method == 'DELETE':
             if no_config_name:
                 try:
-                    self._rpc('config.store', 'manage_delete_store', vip_identity, external_platform=platform)
+                    self._rpc(CONFIGURATION_STORE, 'manage_delete_store', vip_identity, external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
             else:
                 try:
-                    self._rpc('config.store', 'manage_delete_config', vip_identity, config_name,
+                    self._rpc(CONFIGURATION_STORE, 'manage_delete_config', vip_identity, config_name,
                               external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
@@ -401,7 +402,7 @@ class VUIEndpoints:
 
         if request_method == 'GET':
             try:
-                list_of_agents = self._rpc('control', 'list_agents', external_platform=platform)
+                list_of_agents = self._rpc(CONTROL, 'list_agents', external_platform=platform)
                 result = next(item['priority'] for item in list_of_agents if item['identity'] == vip_identity)
                 result = int(result) if result else result
                 status = True if result is not None else False
@@ -419,8 +420,8 @@ class VUIEndpoints:
                 error = {'error': f'Priority must be an integer from 0 - 99. Received: {priority}.'}
                 return Response(json.dumps(error), 400, content_type='application/json')
             try:
-                uuid = self._rpc('control', 'identity_exists', vip_identity, external_platform=platform)
-                self._rpc('control', 'prioritize_agent', uuid, priority, external_platform=platform)
+                uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
+                self._rpc(CONTROL, 'prioritize_agent', uuid, priority, external_platform=platform)
                 return Response(status=204)
             except MethodNotFound or ValueError as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
@@ -428,8 +429,8 @@ class VUIEndpoints:
 
         elif request_method == 'DELETE':
             try:
-                uuid = self._rpc('control', 'identity_exists', vip_identity, external_platform=platform)
-                self._rpc('control', 'prioritize_agent', uuid, None, external_platform=platform)
+                uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
+                self._rpc(CONTROL, 'prioritize_agent', uuid, None, external_platform=platform)
                 return Response(status=204)
             except MethodNotFound or ValueError as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
@@ -524,7 +525,7 @@ class VUIEndpoints:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/tag/?$', path_info).groups()
-        list_of_agents = self._rpc('control', 'list_agents', external_platform=platform)
+        list_of_agents = self._rpc(CONTROL, 'list_agents', external_platform=platform)
         if request_method == 'GET':
             try:
                 result = next(item['tag'] for item in list_of_agents if item['identity'] == vip_identity)
@@ -538,19 +539,19 @@ class VUIEndpoints:
 
         elif request_method == 'PUT':
             tag = data.get('tag')
-            uuid = self._rpc('control', 'identity_exists', vip_identity, external_platform=platform)
+            uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
             if not uuid:
                 return Response(json.dumps({'error': f"Agent '{vip_identity}' not found."}),
                                 400, content_type='application/json')
-            self._rpc('control', 'tag_agent', uuid, tag, external_platform=platform)
+            self._rpc(CONTROL, 'tag_agent', uuid, tag, external_platform=platform)
             return Response(status=204)
 
         elif request_method == 'DELETE':
-            uuid = self._rpc('control', 'identity_exists', vip_identity, external_platform=platform)
+            uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
             if not uuid:
                 return Response(json.dumps({'error': f"Agent '{vip_identity}' not found."}),
                                 400, content_type='application/json')
-            self._rpc('control', 'tag_agent', uuid, None, external_platform=platform)
+            self._rpc(CONTROL, 'tag_agent', uuid, None, external_platform=platform)
             return Response(status=204)
 
     @endpoint
@@ -733,7 +734,7 @@ class VUIEndpoints:
                             status=501, content_type='text/plain')
 
     def handle_platforms_pubsub(self, env: dict, start_response, data: dict):
-        from src.volttron.services.web import get_bearer  # TODO: Is this necessary, with bearer imported in decorator?
+        from volttron.services.web import get_bearer  # TODO: Is this necessary, with bearer imported in decorator?
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         query_params = url_decode(env['QUERY_STRING'])
@@ -919,7 +920,7 @@ class VUIEndpoints:
                 return Response(json.dumps({f'error': f'For agent  {e}'}),
                                 400, content_type='application/json')
         if request_method == 'DELETE':
-            self._rpc('control', 'clear_status', True, external_platform=platform)
+            self._rpc(CONTROL, 'clear_status', True, external_platform=platform)
             return Response(status=204)
 
     def _find_active_sub_routes(self, segments: list, path_info: str = None, enclose=True) -> dict or list:
@@ -954,8 +955,8 @@ class VUIEndpoints:
         return platforms
 
     def _get_agents(self, platform: str, agent_state: str = "running", include_hidden=False) -> List[str]:
-        agent_list = self._rpc('control', 'list_agents', external_platform=platform)
-        peerlist = self._rpc('control', 'peerlist', external_platform=platform)
+        agent_list = self._rpc(CONTROL, 'list_agents', external_platform=platform)
+        peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
         for agent in agent_list:
             agent['running'] = True if agent['identity'] in peerlist else False
         if include_hidden:
@@ -970,17 +971,17 @@ class VUIEndpoints:
             return [os.path.splitext(a)[0] for a in os.listdir(f'{self._agent.core.volttron_home}/packaged')]
 
     def _get_agent_state(self, platform: str, vip_identity: str) -> str:
-        agent_list = self._rpc('control', 'list_agents', external_platform=platform)
+        agent_list = self._rpc(CONTROL, 'list_agents', external_platform=platform)
         installed_agents = [a['identity'] for a in agent_list]
-        peerlist = self._rpc('control', 'peerlist', external_platform=platform)
+        peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
         if vip_identity in installed_agents:
             return 'running' if vip_identity in peerlist else 'installed'
         else:
             return 'not_installed'
 
     def _get_status(self, platform: str):
-        list_of_agents = self._rpc('control', 'list_agents', external_platform=platform)
-        running_agents = self._rpc('control', 'status_agents', external_platform=platform)
+        list_of_agents = self._rpc(CONTROL, 'list_agents', external_platform=platform)
+        running_agents = self._rpc(CONTROL, 'status_agents', external_platform=platform)
         running_agents = {a[0]: {'pid': a[2][0], 'exit_code': a[2][1]} for a in running_agents}
         ret_dict = {}
         for la in list_of_agents:
@@ -998,7 +999,7 @@ class VUIEndpoints:
                                                                                       'text/csv'] else 'raw'
         if config_type == 'json':
             data = json.dumps(data)
-        self._rpc('config.store', 'manage_store', vip_identity, config_name, data, config_type,
+        self._rpc(CONFIGURATION_STORE, 'manage_store', vip_identity, config_name, data, config_type,
                   external_platform=platform)
         return None
 

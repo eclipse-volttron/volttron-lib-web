@@ -104,7 +104,7 @@ class VUIWebSocket(WebSocket):
         _log = logging.getLogger(self.__class__.__name__)
 
     def _get_topic(self):
-        from src.volttron.services.web import get_bearer
+        from volttron.services.web import get_bearer
         path_info = self.environ['PATH_INFO']
         topic = path_info.split('/pubsub/')[1]
         access_token = get_bearer(self.environ)

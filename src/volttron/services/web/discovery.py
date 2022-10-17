@@ -18,7 +18,7 @@ class DiscoveryInfo(object):
     """ A DiscoveryInfo class.
 
     The DiscoveryInfo class provides a wrapper around the return values from
-    a call to the /discovery/ endpoint of the `volttron.platform.web.
+    a call to the /discovery/ endpoint of the `volttron.services.web.
     """
 
     def __init__(self, **kwargs):

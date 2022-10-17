@@ -24,9 +24,10 @@ treelib = ">=1.6.1"
 
 werkzeug = ">=2.1.2"
 ws4py = ">=0.5.1"
-volttron = {path = "../volttron-core", develop = true}
+# volttron = {path = "../volttron-core", develop = true}
 requests = "^2.28.1"
 argon2-cffi = "^21.3.0"
+volttron = "^10.0.1-alpha.24"
 
 [tool.poetry.dev-dependencies]
 # formatting, quality, tests
@@ -42,7 +43,7 @@ pytest-sugar = ">=0.9.4"
 pytest-xdist = ">=2.2.0"
 types-toml = ">=0.10.1"
 # volttron = {path = "../volttron-core"}
-# volttron-testing = {path = "../volttron-testing"}
+volttron-testing = {path = "../volttron-testing"}
 
 # tasks
 duty = ">=0.6.0"

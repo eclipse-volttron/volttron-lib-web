@@ -9,7 +9,7 @@ from deepdiff import DeepDiff
 
 import pytest
 
-from src.volttron.services.web import PlatformWebService
+from volttron.services.web import PlatformWebService
 from volttrontesting.utils import AgentMock
 
 try:
@@ -24,8 +24,8 @@ from volttron.client.vip.agent import Agent
 from volttron.utils.keystore import get_random_key
 from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
 from volttrontesting.web_utils import get_test_web_env
-from src.volttron.services.web.admin_endpoints import AdminEndpoints
-from src.volttron.services.web.authenticate_endpoint import AuthenticateEndpoints
+from volttron.services.web.admin_endpoints import AdminEndpoints
+from volttron.services.web.authenticate_endpoint import AuthenticateEndpoints
 from volttrontesting.fixtures.cert_fixtures import certs_profile_1
 from volttrontesting.fixtures.volttron_platform_fixtures import get_test_volttron_home, volttron_instance_web
 

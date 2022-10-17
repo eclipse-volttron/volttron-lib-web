@@ -38,7 +38,7 @@
 
 
 import pytest
-from src.volttron.services.web.admin_endpoints import AdminEndpoints
+from volttron.services.web.admin_endpoints import AdminEndpoints
 from volttron.utils.keystore import get_random_key
 #from volttron.utils.rmq_mgmt import RabbitMQMgmt
 from mock import patch
@@ -196,7 +196,7 @@ def test_add_user():
 def test_construction():
 
     # within rabbitmq mgmt this is used
-    with patch("volttron.platform.agent.utils.get_platform_instance_name",
+    with patch("volttron.utils.ClientContext.get_instance_name",
                return_value="volttron"):
         mgmt = RabbitMQMgmt()
         assert mgmt is not None
