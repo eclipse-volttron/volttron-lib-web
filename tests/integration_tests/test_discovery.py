@@ -41,9 +41,6 @@ import os
 
 from volttron.services.web.discovery import DiscoveryInfo
 
-from volttrontesting.web_utils import get_test_web_env
-from volttrontesting.fixtures.volttron_platform_fixtures import volttron_instance_web
-
 
 def test_discovery_endpoint(volttron_instance_web):
     """

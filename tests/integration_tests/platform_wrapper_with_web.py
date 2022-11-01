@@ -6,9 +6,8 @@ import yaml
 from pathlib import Path
 from typing import Optional
 
-from volttron.client.vip.agent import Agent
 from volttron.client.known_identities import PLATFORM_WEB
-
+from volttron.client.vip.agent import Agent
 from volttrontesting.agent_additions import add_volttron_central, add_volttron_central_platform
 from volttrontesting.fixtures.cert_fixtures import certs_profile_2
 from volttrontesting.platformwrapper import PlatformWrapper, with_os_environ, UNRESTRICTED
@@ -17,8 +16,9 @@ from volttrontesting.platformwrapper import PlatformWrapper, with_os_environ, UN
 class PlatformWrapperWithWeb(PlatformWrapper):
     def __init__(self, messagebus=None, ssl_auth=False, instance_name=None,
                  secure_agent_users=False, remote_platform_ca=None):
-        super(PlatformWrapperWithWeb, self).__init__(messagebus, ssl_auth, instance_name, secure_agent_users,
-                                                     remote_platform_ca)
+        super(PlatformWrapperWithWeb, self).__init__(messagebus=messagebus, ssl_auth=ssl_auth,
+                                                     instance_name=instance_name, secure_agent_users=secure_agent_users,
+                                                     remote_platform_ca=remote_platform_ca)
 
         # By default no web server should be started.
         self.bind_web_address = None
@@ -26,7 +26,6 @@ class PlatformWrapperWithWeb(PlatformWrapper):
         self.jsonrpc_endpoint = None
         self.volttron_central_address = None
         self.volttron_central_serverkey = None
-        self.instance_name = instance_name
         self.serverkey = None
 
         self._web_admin_api = None
@@ -37,10 +36,11 @@ class PlatformWrapperWithWeb(PlatformWrapper):
 
     def allow_all_connections(self):
         super(PlatformWrapperWithWeb, self).allow_all_connections()
-        if self.messagebus == 'rmq' and self.bind_web_address is not None:
-            self.enable_auto_csr()
-        if self.bind_web_address is not None:
-            self.web_admin_api.create_web_admin('admin', 'admin', self.messagebus)
+        with with_os_environ(self.env):
+            if self.messagebus == 'rmq' and self.bind_web_address is not None:
+                self.enable_auto_csr()
+            if self.bind_web_address is not None:
+                self.web_admin_api.create_web_admin('admin', 'admin', self.messagebus)
 
     def build_agent(self, address=None, should_spawn=True, identity=None,
                     publickey=None, secretkey=None, serverkey=None,
@@ -167,47 +167,49 @@ class PlatformWrapperWithWeb(PlatformWrapper):
         super(PlatformWrapperWithWeb, self).startup_platform(vip_address, auth_dict, mode, msgdebug, setupmode,
                                                              agent_monitor_frequency, timeout,
                                                              perform_preauth_service_agents)
+        with with_os_environ(self.env):
+            if bind_web_address:
+                # Now that we know we have web and we are using ssl then we
+                # can enable the WebAdminApi.
+                # if self.ssl_auth:
+                self._web_admin_api = WebAdminApi(self)
+                self._web_admin_api.create_web_admin("admin", "admin")
+                times = 0
+                has_discovery = False
+                error_was = None
 
-        if bind_web_address:
-            # Now that we know we have web and we are using ssl then we
-            # can enable the WebAdminApi.
-            # if self.ssl_auth:
-            self._web_admin_api = WebAdminApi(self)
-            self._web_admin_api.create_web_admin("admin", "admin")
-            times = 0
-            has_discovery = False
-            error_was = None
-
-            while times < 10:
-                times += 1
-                try:
-                    print(f'###################### BUS IS: {self.messagebus} #############################')
-                    print(f'###################### SSL AUTH IS: {self.ssl_auth} ##########################')
-                    if self.ssl_auth:
-                        print(f'############## IN SSL_AUTH BLOCK #################')
-                        resp = grequests.get(self.discovery_address,
-                                             verify=self.certsobj.cert_file(self.certsobj.root_ca_name)
-                                             ).send().response
-                    else:
-                        print(f'################## IN ELSE BLOCK #######################')
-                        resp = grequests.get(self.discovery_address).send().response
-                    print(f'################ RESP IS: {resp} ######################')
-                    if resp.ok:
-                        self.logit("Has discovery address for {}".format(self.discovery_address))
-                        if self.requests_ca_bundle:
-                            self.logit("Using REQUESTS_CA_BUNDLE: {}".format(self.requests_ca_bundle))
+                while times < 10:
+                    times += 1
+                    try:
+                        print(f'###################### BUS IS: {self.messagebus} #############################')
+                        print(f'###################### SSL AUTH IS: {self.ssl_auth} ##########################')
+                        print(
+                            f'###################### SELF.DISCOVERY_ADDRESS IS: {self.discovery_address} ###################')
+                        if self.ssl_auth:
+                            print(f'############## IN SSL_AUTH BLOCK #################')
+                            resp = grequests.get(self.discovery_address,
+                                                 verify=self.certsobj.cert_file(self.certsobj.root_ca_name)
+                                                 ).send().response
                         else:
-                            self.logit("Not using requests_ca_bundle for message bus: {}".format(self.messagebus))
-                        has_discovery = True
-                        break
-                except Exception as e:
-                    gevent.sleep(0.5)
-                    error_was = e
-                    self.logit("Connection error found {}".format(e))
-            if not has_discovery:
-                if error_was:
-                    raise error_was
-                raise Exception("Couldn't connect to discovery platform.")
+                            print(f'################## IN ELSE BLOCK #######################')
+                            resp = grequests.get(self.discovery_address).send().response
+                        print(f'################ RESP IS: {resp} ######################')
+                        if resp.ok:
+                            self.logit("Has discovery address for {}".format(self.discovery_address))
+                            if self.requests_ca_bundle:
+                                self.logit("Using REQUESTS_CA_BUNDLE: {}".format(self.requests_ca_bundle))
+                            else:
+                                self.logit("Not using requests_ca_bundle for message bus: {}".format(self.messagebus))
+                            has_discovery = True
+                            break
+                    except Exception as e:
+                        gevent.sleep(0.5)
+                        error_was = e
+                        self.logit("Connection error found {}".format(e))
+                if not has_discovery:
+                    if error_was:
+                        raise error_was
+                    raise Exception("Couldn't connect to discovery platform.")
 
     def restart_platform(self):
         with with_os_environ(self.env):

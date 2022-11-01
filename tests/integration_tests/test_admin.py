@@ -3,8 +3,6 @@ import os
 import gevent
 import pytest
 
-from volttrontesting.fixtures.volttron_platform_fixtures import volttron_instance_web
-
 
 @pytest.fixture(scope="module")
 def user_pass():

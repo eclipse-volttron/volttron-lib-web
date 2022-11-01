@@ -789,8 +789,11 @@ class PlatformWebService(ServiceInterface, Agent):
                 # can't use it directly therefore we use the -server on the file to specify
                 # the server based file.
                 base_filename = ClientContext.get_fq_identity(self.core.identity) + "-server"
+                _log.debug(f'############### BASE FILENAME: {base_filename} #########################')
                 ssl_cert = self._certs.cert_file(base_filename)
+                _log.debug(f'SSL CERT: {ssl_cert}')
                 ssl_key = self._certs.private_key_file(base_filename)
+                _log.debug(f'SSL KEY: {ssl_key}')
 
                 if not os.path.isfile(ssl_cert) or not os.path.isfile(ssl_key):
                     self._certs.create_signed_cert_files(base_filename, cert_type='server')

@@ -36,28 +36,27 @@
 # under Contract DE-AC05-76RL01830
 # }}}
 
-
+import os
 import pytest
-from volttron.services.web.admin_endpoints import AdminEndpoints
-from volttron.utils.keystore import get_random_key
-#from volttron.utils.rmq_mgmt import RabbitMQMgmt
-from mock import patch
+
+from passlib.hash import argon2
 from urllib.parse import urlencode
-from volttrontesting.web_utils import get_test_web_env
-from volttrontesting.fixtures.volttron_platform_fixtures import \
-    get_test_volttron_home, rmq_skipif
 
 from volttron.utils import jsonapi
-from passlib.hash import argon2
-import os
+from volttron.utils.keystore import get_random_key
+from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
+from volttrontesting.web_utils import get_test_web_env
+
+from volttron.services.web.admin_endpoints import AdminEndpoints
 
 ___WEB_USER_FILE_NAME__ = 'web-users.json'
 
 
-@pytest.mark.web
 def test_admin_unauthorized():
-    config_params = {"web-secret-key": get_random_key()}
-    with get_test_volttron_home(messagebus='zmq', config_params=config_params):
+    volttron_home = create_volttron_home()
+    config_params = {"web-secret-key": get_random_key(), 'VOLTTRON_HOME': volttron_home}
+
+    with with_os_environ(config_params):
         myuser = 'testing'
         mypass = 'funky'
         adminep = AdminEndpoints()
@@ -70,9 +69,9 @@ def test_admin_unauthorized():
         assert b'Unauthorized User' in response.response[0]
 
 
-@pytest.mark.web
 def test_set_platform_password_setup():
-    with get_test_volttron_home(messagebus='zmq') as vhome:
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
         # Note these passwords are not right so we expect to be redirected back to the
         # first.html
         params = urlencode(dict(username='bart', password1='goodwin', password2='wowsa'))
@@ -102,7 +101,7 @@ def test_set_platform_password_setup():
         assert '/admin/login.html' == response.headers.get('Location')
         assert 302 == response.status_code
 
-        webuserpath = os.path.join(vhome, 'web-users.json')
+        webuserpath = os.path.join(os.environ.get('VOLTTRON_HOME'), 'web-users.json')
         with open(webuserpath) as wup:
             users = jsonapi.load(wup)
         assert users.get('bart') is not None
@@ -111,9 +110,9 @@ def test_set_platform_password_setup():
         assert argon2.verify("wowsa", user['hashed_password'])
 
 
-@pytest.mark.web
 def test_admin_login_page():
-    with get_test_volttron_home(messagebus='zmq'):
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
         username_test = "mytest"
         username_test_passwd = "value-plus"
         adminep = AdminEndpoints()
@@ -129,9 +128,9 @@ def test_admin_login_page():
         assert '200 OK' == response.status
 
 
-@pytest.mark.web
 def test_persistent_users():
-    with get_test_volttron_home(messagebus='zmq'):
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
         username_test = "mytest"
         username_test_passwd = "value-plus"
         adminep = AdminEndpoints()
@@ -144,10 +143,10 @@ def test_persistent_users():
         assert username_test == list(another_ep._userdict)[0]
 
 
-@pytest.mark.web
 def test_add_user():
-    with get_test_volttron_home(messagebus='zmq') as vhome:
-        webuserpath = os.path.join(vhome, ___WEB_USER_FILE_NAME__)
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        webuserpath = os.path.join(os.environ.get('VOLTTRON_HOME'), ___WEB_USER_FILE_NAME__)
         assert not os.path.exists(webuserpath)
 
         username_test = "test"
@@ -189,14 +188,3 @@ def test_add_user():
         assert ['read_only', 'jr-devs'] == user['groups']
         assert user['hashed_password'] is not None
         assert original_hashed_passwordd != user['hashed_password']
-
-
-@pytest.mark.web
-@rmq_skipif
-def test_construction():
-
-    # within rabbitmq mgmt this is used
-    with patch("volttron.utils.ClientContext.get_instance_name",
-               return_value="volttron"):
-        mgmt = RabbitMQMgmt()
-        assert mgmt is not None

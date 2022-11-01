@@ -35,29 +35,29 @@
 # BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
 # under Contract DE-AC05-76RL01830
 # }}}
-from configparser import ConfigParser
-import time
-import os
-
-import grequests
 import gevent
+import grequests
 import pytest
+import os
+import time
+
+from configparser import ConfigParser
 from mock import MagicMock
 
 from volttron.client.known_identities import CONTROL
 from volttron.utils import jsonapi
-from volttrontesting.utils import get_rand_tcp_address, get_rand_http_address
-# from volttrontesting.fixtures.volttron_platform_fixtures import volttron_instance, get_volttron_instances
+from volttrontesting.utils import get_rand_http_address, get_rand_tcp_address
 
-from platform_wrapper_with_web import PlatformWrapperWithWeb as PlatformWrapper, with_os_environ
+from platform_wrapper_with_web import PlatformWrapperWithWeb, with_os_environ
+
 
 @pytest.mark.parametrize("messagebus, ssl_auth", [
     ('zmq', False),
-    ('zmq', True)
+    # ('zmq, True)
     # , ('rmq', True)
 ])
 def test_can_create(messagebus, ssl_auth):
-    p = PlatformWrapper(messagebus=messagebus, ssl_auth=ssl_auth)
+    p = PlatformWrapperWithWeb(messagebus=messagebus, ssl_auth=ssl_auth)
     try:
         assert not p.is_running()
         assert p.volttron_home.startswith("/tmp/tmp")
@@ -74,16 +74,18 @@ def test_can_create(messagebus, ssl_auth):
 
 @pytest.mark.parametrize("messagebus, https_enabled", [
     ('zmq', False),
-    ('zmq', True)
+    # ('zmq, True)
     # , ('zmq', False)
     # , ('rmq', True)
 ])
 def test_can_create_web_enabled(messagebus: str, https_enabled: bool):
-    p = PlatformWrapper(messagebus=messagebus)
+    print(f"MESSAGE BUS: {messagebus}, HTTPS_ENABLED: {https_enabled}")
+    p = PlatformWrapperWithWeb(messagebus=messagebus)
     try:
         assert not p.is_running()
         assert p.volttron_home.startswith("/tmp/tmp")
         http_address = get_rand_http_address(https=https_enabled)
+        print(f'################## HTTP_ADDRESS IS: {http_address} #######################')
         p.startup_platform(vip_address=get_rand_tcp_address(), bind_web_address=http_address)
         assert p.is_running()
         result = grequests.get(http_address, verify=False).send()
@@ -170,7 +172,7 @@ def test_instance_writes_to_instances_file(volttron_instance):
 
 # TODO: @pytest.mark.skip(reason="To test actions on github")
 @pytest.mark.wrapper
-def test_can_install_listener(volttron_instance: PlatformWrapper):
+def test_can_install_listener(volttron_instance: PlatformWrapperWithWeb):
     vi = volttron_instance
     assert vi is not None
     assert vi.is_running()
@@ -237,6 +239,7 @@ def test_can_stop_vip_heartbeat(volttron_instance):
     clear_messages()
     vi = volttron_instance
     assert vi is not None
+    print(f'#################### vi.is_running() is {vi.is_running()} ######################')
     assert vi.is_running()
 
     agent = vi.build_agent(heartbeat_autostart=True,
@@ -376,14 +379,14 @@ def test_will_update_throws_typeerror():
     # Note dictionary for os.environ must be string=string for key=value
 
     to_update = dict(shanty=dict(holy="cow"))
-    #with pytest.raises(TypeError):
-    with with_os_environ(to_update):
-        print("Should not reach here")
+    with pytest.raises(TypeError):
+        with with_os_environ(to_update):
+            print("Should not reach here")
 
     to_update = dict(bogus=35)
-#    with pytest.raises(TypeError):
-    with with_os_environ(to_update):
-        print("Should not reach here")
+    with pytest.raises(TypeError):
+        with with_os_environ(to_update):
+            print("Should not reach here")
 
 
 def test_will_update_environ():
