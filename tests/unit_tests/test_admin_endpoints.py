@@ -44,8 +44,10 @@ from urllib.parse import urlencode
 
 from volttron.utils import jsonapi
 from volttron.utils.keystore import get_random_key
+
 from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
-from volttrontesting.web_utils import get_test_web_env
+
+from web_utils import get_test_web_env
 
 from volttron.services.web.admin_endpoints import AdminEndpoints
 

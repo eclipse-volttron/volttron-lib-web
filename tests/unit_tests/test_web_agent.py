@@ -7,8 +7,10 @@ import pytest
 
 from volttron.client.vip.agent import Agent
 from volttron.services.web import PlatformWebService
+
 from volttrontesting.utils import AgentMock
-from volttrontesting.web_utils import get_test_web_env
+
+from web_utils import get_test_web_env
 
 
 @pytest.fixture()

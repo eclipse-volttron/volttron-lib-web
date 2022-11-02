@@ -1,10 +1,10 @@
-import mock
-import pytest
-from unittest.mock import MagicMock
-
-import re
 import json
+import mock
 import pickle
+import pytest
+import re
+
+from unittest.mock import MagicMock
 from werkzeug import Response
 
 # mock.patch('volttron.services.web.vui_endpoints.endpoint', lambda x: x).start()
@@ -14,9 +14,11 @@ from volttron.client.vip.agent import Agent
 from volttron.client.vip.agent.results import AsyncResult
 from volttron.services.web.platform_web_service import PlatformWebService
 from volttron.services.web.vui_endpoints import VUIEndpoints
-from volttrontesting.utils import AgentMock
-from volttrontesting.web_utils import get_test_web_env
 from volttron.utils.jsonrpc import RemoteError
+
+from volttrontesting.utils import AgentMock
+
+from web_utils import get_test_web_env
 
 import logging  # TODO: Shouldn't need logger once this is complete.
 _log = logging.getLogger()
