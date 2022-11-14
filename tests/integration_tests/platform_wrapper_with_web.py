@@ -8,7 +8,7 @@ from typing import Optional
 
 from volttron.client.known_identities import PLATFORM_WEB
 from volttron.client.vip.agent import Agent
-from volttrontesting.agent_additions import add_volttron_central, add_volttron_central_platform
+# from volttrontesting.agent_additions import add_volttron_central, add_volttron_central_platform
 from volttrontesting.fixtures.cert_fixtures import certs_profile_2
 from volttrontesting.platformwrapper import PlatformWrapper, with_os_environ, UNRESTRICTED
 
