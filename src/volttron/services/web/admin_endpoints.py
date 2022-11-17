@@ -41,8 +41,8 @@ import os
 import re
 from urllib.parse import parse_qs
 
-from volttron.platform.agent.known_identities import PLATFORM_WEB, AUTH
-from volttron.platform.jsonrpc import RemoteError
+from volttron.client.known_identities import PLATFORM_WEB, AUTH
+from volttron.utils.jsonrpc import RemoteError
 
 try:
     from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNotFound
@@ -55,13 +55,13 @@ except ImportError:
     logging.getLogger().warning("Missing passlib library in admin_endpoints.py")
 
 from watchdog_gevent import Observer
-from volttron.platform.agent.web import Response
+from werkzeug import Response
 
-from ...platform import get_home
-from ...platform import jsonapi
-from ...platform.certs import Certs
-from ...utils import VolttronHomeFileReloader
-from ...utils.persistance import PersistentDict
+from volttron.utils.context import ClientContext
+from volttron.utils import jsonapi
+from volttron.utils.certs import Certs
+from volttron.utils.filewatch import VolttronHomeFileReloader
+from volttron.utils.persistance import PersistentDict
 
 
 _log = logging.getLogger(__name__)
@@ -105,12 +105,12 @@ class AdminEndpoints(object):
         self._observer = Observer()
         self._observer.schedule(
             VolttronHomeFileReloader("web-users.json", self.reload_userdict),
-            get_home()
+            ClientContext.get_volttron_home()
         )
         self._observer.start()
 
     def reload_userdict(self):
-        webuserpath = os.path.join(get_home(), 'web-users.json')
+        webuserpath = os.path.join(ClientContext.get_volttron_home(), 'web-users.json')
         self._userdict = PersistentDict(webuserpath, format="json")
 
     def get_routes(self):
@@ -155,7 +155,7 @@ class AdminEndpoints(object):
         :param data: data associated with a web form or json/xml request data
         :return: Response object.
         """
-        from volttron.platform.web import get_bearer, NotAuthorized
+        from ..web import get_bearer, NotAuthorized
         try:
             claims = self._rpc_caller(PLATFORM_WEB, 'get_user_claims', get_bearer(env)).get()
         except NotAuthorized:
@@ -208,7 +208,7 @@ class AdminEndpoints(object):
                 # A template with no params.
                 html = template.render()
 
-            return Response(html)
+            return Response(html, content_type="text/html")
 
         template = template_env(env).get_template('index.html')
         resp = template.render()

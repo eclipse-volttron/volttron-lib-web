@@ -1,6 +1,6 @@
 import logging
 
-from ws4py.server.geventserver import WebSocketWSGIApplication
+from ws4py.server.wsgiutils import WebSocketWSGIApplication
 
 from .websocket import VolttronWebSocket
 

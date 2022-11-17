@@ -2,8 +2,8 @@ import logging
 import requests
 from urllib.parse import urlparse, urljoin
 
-from volttron.platform import jsonapi
-from volttron.platform.certs import Certs
+from volttron.utils import jsonapi
+from volttron.utils.certs import Certs
 
 _log = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ class DiscoveryInfo(object):
     """ A DiscoveryInfo class.
 
     The DiscoveryInfo class provides a wrapper around the return values from
-    a call to the /discovery/ endpoint of the `volttron.platform.web.
+    a call to the /discovery/ endpoint of the `volttron.services.web.
     """
 
     def __init__(self, **kwargs):

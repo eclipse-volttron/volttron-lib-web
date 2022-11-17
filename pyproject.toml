@@ -13,17 +13,28 @@ readme = "README.md"
 repository = "https://github.com/VOLTTRON/volttron-web-services"
 homepage = "https://volttron.readthedocs.io"
 keywords = []
-packages = [ {include="volttron"} ]
+packages = [ {include="volttron", from = "src" } ]
 
 [tool.poetry.dependencies]
+passlib = "^1.7.4"
+PyJWT = "==1.7.1"
 python = ">=3.8,<4.0"
+treelib = ">=1.6.1"
+# volttron = "^volttron 10.0.1a15"
 
-volttron = ">=0.1.0"
+werkzeug = ">=2.1.2"
+ws4py = ">=0.5.1"
+volttron = {path = "../volttron-core", develop = true}
+requests = "^2.28.1"
+argon2-cffi = "^21.3.0"
+#volttron = "^10.0.1-alpha.24"
 
 [tool.poetry.dev-dependencies]
 # formatting, quality, tests
 autoflake = ">=1.4"
+deepdiff = ">=5.8.1"
 isort = ">=5.7.0"
+mock = "^4.0.3"
 mypy = ">=0.812"
 pytest = ">=6.2.2"
 pytest-cov = ">=2.11.1"
@@ -31,7 +42,8 @@ pytest-randomly = ">=3.5.0"
 pytest-sugar = ">=0.9.4"
 pytest-xdist = ">=2.2.0"
 types-toml = ">=0.10.1"
-volttron = {path = "../volttron-core"}
+# volttron = {path = "../volttron-core"}
+volttron-testing = {path = "../volttron-testing", develop=true}
 
 # tasks
 duty = ">=0.6.0"

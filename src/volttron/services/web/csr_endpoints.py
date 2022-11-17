@@ -2,10 +2,11 @@ import re
 import logging
 import weakref
 
-from volttron.platform import jsonapi
-from volttron.platform.agent.utils import get_platform_instance_name
-from volttron.platform.agent.web import Response
-from volttron.platform.certs import Certs
+from werkzeug import Response
+
+from volttron.utils import jsonapi
+from volttron.utils.certs import Certs
+from volttron.utils.context import ClientContext
 
 _log = logging.getLogger(__name__)
 
@@ -62,10 +63,10 @@ class CSREndpoints(object):
         identity = self._certs.get_csr_common_name(csr)
 
         # The identity must start with the current instances name or it is a failure.
-        if not identity.startswith(get_platform_instance_name() + "."):
+        if not identity.startswith(ClientContext.get_instance_name() + "."):
             json_response = dict(status="ERROR",
                                  message="CSR must start with instance name: {}".format(
-                                     get_platform_instance_name()))
+                                     ClientContext.get_instance_name()))
             Response(jsonapi.dumps(json_response),
                      content_type='application/json',
                      headers={'Content-type': 'application/json'})
