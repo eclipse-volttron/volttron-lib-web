@@ -40,7 +40,7 @@ pytest-randomly = ">=3.5.0"
 pytest-sugar = ">=0.9.4"
 pytest-xdist = ">=2.2.0"
 types-toml = ">=0.10.1"
-volttron-testing = '>=0.3.1a18'
+volttron-testing = '>=0.3.1a19'
 
 # tasks
 duty = ">=0.6.0"
