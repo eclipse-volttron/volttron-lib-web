@@ -20,7 +20,7 @@ passlib = "^1.7.4"
 PyJWT = "==1.7.1"
 python = ">=3.8,<4.0"
 treelib = ">=1.6.1"
-volttron = "^volttron 10.0.1a41"
+volttron = "^10.0.1a41"
 
 werkzeug = ">=2.1.2"
 ws4py = ">=0.5.1"
