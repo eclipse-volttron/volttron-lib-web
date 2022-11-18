@@ -15,13 +15,12 @@ env:
   LC_ALL: en_US.utf-8
   PYTHON_VERSION: '3.10'
   PROJECT_NAME: volttron-lib-web
-  RUNS_ON: ubuntu-22.04
   POETRY_VERSION: '1.2.2'
 
 jobs:
 
   deploy-pre-release:
-    runs-on: ${{env.RUNS_ON}}
+    runs-on: ubuntu-22.04
     steps:
       - run: echo "🎉 The job was automatically triggered by a ${{ github.event_name }} event."
       - run: echo "🐧 This job is now running on a ${{ runner.os }} server hosted by GitHub!"
@@ -87,7 +86,7 @@ jobs:
             # uses -V which is version sort to keep it monotonically increasing.
             current_tag=$(git tag -l "v*" | grep --invert-match '-' | sort --reverse -V  | sed -n 1p)
           else
-            current_tag=v10.0.0
+            current_tag=v0.1.0
           fi
 
           current_tag=${current_tag#?}
