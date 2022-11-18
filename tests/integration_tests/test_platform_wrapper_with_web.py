@@ -45,10 +45,19 @@ from configparser import ConfigParser
 from mock import MagicMock
 
 from volttron.client.known_identities import CONTROL
-from volttron.utils import jsonapi
+
+from volttrontesting.platformwrapper import with_os_environ
 from volttrontesting.utils import get_rand_http_address, get_rand_tcp_address
 
-from platform_wrapper_with_web import PlatformWrapperWithWeb, with_os_environ
+from platform_wrapper_with_web import PlatformWrapperWithWeb
+
+
+def test_will_update_environ():
+    to_update = dict(farthing="50")
+    with with_os_environ(to_update):
+        assert os.environ.get("farthing") == "50"
+
+    assert "farthing" not in os.environ
 
 
 @pytest.mark.parametrize("messagebus, ssl_auth", [
@@ -61,33 +70,10 @@ def test_can_create(messagebus, ssl_auth):
     try:
         assert not p.is_running()
         assert p.volttron_home.startswith("/tmp/tmp")
-
-        p.startup_platform(vip_address=get_rand_tcp_address())
-        assert p.is_running()
-        assert p.dynamic_agent.vip.ping("").get(timeout=2)
-    finally:
-        if p:
-            p.shutdown_platform()
-
-    assert not p.is_running()
-
-
-@pytest.mark.parametrize("messagebus, https_enabled", [
-    ('zmq', False),
-    # ('zmq, True)
-    # , ('zmq', False)
-    # , ('rmq', True)
-])
-def test_can_create_web_enabled(messagebus: str, https_enabled: bool):
-    print(f"MESSAGE BUS: {messagebus}, HTTPS_ENABLED: {https_enabled}")
-    p = PlatformWrapperWithWeb(messagebus=messagebus)
-    try:
-        assert not p.is_running()
-        assert p.volttron_home.startswith("/tmp/tmp")
-        http_address = get_rand_http_address(https=https_enabled)
-        print(f'################## HTTP_ADDRESS IS: {http_address} #######################')
+        http_address = get_rand_http_address()
         p.startup_platform(vip_address=get_rand_tcp_address(), bind_web_address=http_address)
         assert p.is_running()
+        assert p.dynamic_agent.vip.ping("").get(timeout=2)
         result = grequests.get(http_address, verify=False).send()
         assert result
         response = result.response
@@ -99,7 +85,6 @@ def test_can_create_web_enabled(messagebus: str, https_enabled: bool):
     assert not p.is_running()
 
 
-@pytest.mark.wrapper
 def test_volttron_config_created(volttron_instance):
     config_file = os.path.join(volttron_instance.volttron_home, "config")
     assert os.path.isfile(config_file)
@@ -111,7 +96,6 @@ def test_volttron_config_created(volttron_instance):
     assert volttron_instance.messagebus == parser.get('volttron', 'message-bus')
 
 
-@pytest.mark.wrapper
 def test_can_restart_platform_without_addresses_changing(get_volttron_instances):
     inst_forward, inst_target = get_volttron_instances(2)
 
@@ -125,7 +109,6 @@ def test_can_restart_platform_without_addresses_changing(get_volttron_instances)
     assert original_vip == inst_forward.vip_address
 
 
-@pytest.mark.wrapper
 def test_can_restart_platform(volttron_instance):
     orig_vip = volttron_instance.vip_address
     orig_vhome = volttron_instance.volttron_home
@@ -148,37 +131,14 @@ def test_can_restart_platform(volttron_instance):
     assert len(volttron_instance.dynamic_agent.vip.peerlist().get()) > 0
 
 
-@pytest.mark.wrapper
-def test_instance_writes_to_instances_file(volttron_instance):
-    vi = volttron_instance
-    assert vi is not None
-    assert vi.is_running()
-
-    instances_file = os.path.expanduser("~/.volttron_instances")
-
-    with open(instances_file, 'r') as fp:
-        result = jsonapi.loads(fp.read())
-
-    assert result.get(vi.volttron_home)
-    the_instance_entry = result.get(vi.volttron_home)
-    for key in ('pid', 'vip-address', 'volttron-home', 'start-args'):
-        assert the_instance_entry.get(key)
-
-    assert the_instance_entry['pid'] == vi.p_process.pid
-
-    assert the_instance_entry['vip-address'][0] == vi.vip_address
-    assert the_instance_entry['volttron-home'] == vi.volttron_home
-
-
 # TODO: @pytest.mark.skip(reason="To test actions on github")
-@pytest.mark.wrapper
 def test_can_install_listener(volttron_instance: PlatformWrapperWithWeb):
     vi = volttron_instance
     assert vi is not None
     assert vi.is_running()
 
     # agent identity should be
-    auuid = vi.install_agent(agent_dir="volttron-listener>=0.1.2a2", start=False)
+    auuid = vi.install_agent(agent_dir="volttron-listener", start=False)
     assert auuid is not None
     time.sleep(1)
     started = vi.start_agent(auuid)
@@ -218,28 +178,25 @@ def test_can_install_listener(volttron_instance: PlatformWrapperWithWeb):
     listening.core.stop()
 
 
-@pytest.mark.wrapper
 def test_reinstall_agent(volttron_instance):
     vi = volttron_instance
     assert vi is not None
     assert vi.is_running()
 
-    auuid = vi.install_agent(agent_dir="volttron-listener>=0.1.2a2", start=True, vip_identity="test_listener")
+    auuid = vi.install_agent(agent_dir="volttron-listener", start=True, vip_identity="test_listener")
     assert volttron_instance.is_agent_running(auuid)
 
-    newuuid = vi.install_agent(agent_dir="volttron-listener>=0.1.2a2", start=True, force=True,
+    newuuid = vi.install_agent(agent_dir="volttron-listener", start=True, force=True,
                                vip_identity="test_listener")
     assert vi.is_agent_running(newuuid)
     assert auuid != newuuid and auuid is not None
     vi.remove_agent(newuuid)
 
 
-@pytest.mark.wrapper
 def test_can_stop_vip_heartbeat(volttron_instance):
     clear_messages()
     vi = volttron_instance
     assert vi is not None
-    print(f'#################### vi.is_running() is {vi.is_running()} ######################')
     assert vi.is_running()
 
     agent = vi.build_agent(heartbeat_autostart=True,
@@ -269,7 +226,6 @@ def test_can_stop_vip_heartbeat(volttron_instance):
     assert not messages_contains_prefix('heartbeat/Agent')
 
 
-@pytest.mark.wrapper
 def test_get_peerlist(volttron_instance):
     vi = volttron_instance
     agent = vi.build_agent()
@@ -279,7 +235,6 @@ def test_get_peerlist(volttron_instance):
     assert len(resp) > 1
 
 
-@pytest.mark.wrapper
 def test_can_remove_agent(volttron_instance):
     """ Confirms that 'volttron-ctl remove' removes agent as expected. """
     assert volttron_instance is not None
@@ -287,7 +242,7 @@ def test_can_remove_agent(volttron_instance):
 
     # Install ListenerAgent as the agent to be removed.
     agent_uuid = volttron_instance.install_agent(
-        agent_dir='volttron-listener>=0.1.2a2', start=False)
+        agent_dir='volttron-listener', start=False)
     assert agent_uuid is not None
     started = volttron_instance.start_agent(agent_uuid)
     assert started is not None
@@ -319,7 +274,6 @@ def messages_contains_prefix(prefix):
     return any([x.startswith(prefix) for x in list(messages.keys())])
 
 
-@pytest.mark.wrapper
 def test_can_publish(volttron_instance):
     global messages
     clear_messages()
@@ -340,7 +294,6 @@ def test_can_publish(volttron_instance):
 
 
 # TODO: @pytest.mark.skip(reason="To test actions on github")
-@pytest.mark.wrapper
 def test_can_install_multiple_listeners(volttron_instance):
     assert volttron_instance.is_running()
     volttron_instance.remove_all_agents()
@@ -351,7 +304,7 @@ def test_can_install_multiple_listeners(volttron_instance):
         for x in range(num_listeners):
             identity = "listener_" + str(x)
             auuid = volttron_instance.install_agent(
-                agent_dir="volttron-listener>=0.1.2a2",
+                agent_dir="volttron-listener",
                 config_file={
                     "agentid": identity,
                     "message": "So Happpy"},
@@ -373,25 +326,3 @@ def test_can_install_multiple_listeners(volttron_instance):
                 volttron_instance.remove_agent(x)
             except:
                 print('COULDN"T REMOVE AGENT')
-
-
-def test_will_update_throws_typeerror():
-    # Note dictionary for os.environ must be string=string for key=value
-
-    to_update = dict(shanty=dict(holy="cow"))
-    with pytest.raises(TypeError):
-        with with_os_environ(to_update):
-            print("Should not reach here")
-
-    to_update = dict(bogus=35)
-    with pytest.raises(TypeError):
-        with with_os_environ(to_update):
-            print("Should not reach here")
-
-
-def test_will_update_environ():
-    to_update = dict(farthing="50")
-    with with_os_environ(to_update):
-        assert os.environ.get("farthing") == "50"
-
-    assert "farthing" not in os.environ

@@ -1,5 +1,52 @@
+import pytest
+
 from io import BytesIO
-from mock import Mock
+from mock import Mock, MagicMock, patch
+
+from volttron.client.vip.agent import Agent
+from volttron.client.vip.agent.results import AsyncResult
+from volttron.services.web.platform_web_service import PlatformWebService
+from volttron.utils.messagebus import store_message_bus_config
+
+from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
+from volttrontesting.utils import AgentMock
+
+
+class QueryHelper:
+    """
+    Query helper allows us to mock out the Query subsystem and return default
+    values for calls to it.
+    """
+
+    def __init__(self, core):
+        pass
+
+    def query(self, name):
+        result = AsyncResult()
+        result.set_result('my_instance_name')
+        return result
+
+
+@pytest.fixture()
+def mock_platform_web_service() -> PlatformWebService:
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        store_message_bus_config('', 'my_instance_name')
+        PlatformWebService.__bases__ = (AgentMock.imitate(Agent, Agent()),)
+        with patch(target='volttron.services.web.vui_endpoints.Query', new=QueryHelper):
+            platform_web = PlatformWebService(server_config=MagicMock(),
+                                              bind_web_address=MagicMock(),
+                                              serverkey=MagicMock(),
+                                              identity=MagicMock(),
+                                              address=MagicMock())
+            # Internally the register uses this value to determine the caller's identity
+            # to allow the platform web service to map calls back to the proper agent
+            platform_web.vip.rpc.context.vip_message.peer.return_value = "foo"
+            platform_web.core.volttron_home = volttron_home
+            platform_web.core.instance_name = 'my_instance_name'
+            platform_web.get_user_claims = lambda x: {'groups': ['vui']}
+
+            yield platform_web
 
 
 def get_test_web_env(path, input_data: bytes = None, query_string='', url_scheme='http', method='GET',
