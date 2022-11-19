@@ -4,7 +4,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "volttron-web-service"
+name = "volttron-lib-web"
 version = "0.1.0"
 description = ""
 authors = ["Craig Allwardt <craig.allwardt@pnnl.gov>"]
