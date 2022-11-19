@@ -131,7 +131,7 @@ def test_can_restart_platform(volttron_instance):
     assert len(volttron_instance.dynamic_agent.vip.peerlist().get()) > 0
 
 
-# TODO: @pytest.mark.skip(reason="To test actions on github")
+@pytest.mark.skip(reason="To test actions on github")
 def test_can_install_listener(volttron_instance: PlatformWrapperWithWeb):
     vi = volttron_instance
     assert vi is not None
@@ -178,6 +178,7 @@ def test_can_install_listener(volttron_instance: PlatformWrapperWithWeb):
     listening.core.stop()
 
 
+@pytest.mark.skip(reason="To test actions on github")
 def test_reinstall_agent(volttron_instance):
     vi = volttron_instance
     assert vi is not None
@@ -235,6 +236,7 @@ def test_get_peerlist(volttron_instance):
     assert len(resp) > 1
 
 
+@pytest.mark.skip(reason="To test actions on github")
 def test_can_remove_agent(volttron_instance):
     """ Confirms that 'volttron-ctl remove' removes agent as expected. """
     assert volttron_instance is not None
@@ -293,7 +295,7 @@ def test_can_publish(volttron_instance):
     assert messages['test/world']['message'] == 'got data'
 
 
-# TODO: @pytest.mark.skip(reason="To test actions on github")
+@pytest.mark.skip(reason="To test actions on github")
 def test_can_install_multiple_listeners(volttron_instance):
     assert volttron_instance.is_running()
     volttron_instance.remove_all_agents()

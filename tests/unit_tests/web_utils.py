@@ -32,6 +32,7 @@ def mock_platform_web_service() -> PlatformWebService:
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
         store_message_bus_config('', 'my_instance_name')
+        bases = PlatformWebService.__bases__
         PlatformWebService.__bases__ = (AgentMock.imitate(Agent, Agent()),)
         with patch(target='volttron.services.web.vui_endpoints.Query', new=QueryHelper):
             platform_web = PlatformWebService(server_config=MagicMock(),
@@ -47,7 +48,7 @@ def mock_platform_web_service() -> PlatformWebService:
             platform_web.get_user_claims = lambda x: {'groups': ['vui']}
 
             yield platform_web
-
+        PlatformWebService.__bases__ = bases
 
 def get_test_web_env(path, input_data: bytes = None, query_string='', url_scheme='http', method='GET',
                      **kwargs) -> dict:
