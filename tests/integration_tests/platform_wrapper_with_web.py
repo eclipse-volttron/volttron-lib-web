@@ -1,14 +1,12 @@
 import gevent
 import grequests
 import os
-import yaml
 
-from pathlib import Path
 from typing import Optional
 
 from volttron.client.known_identities import PLATFORM_WEB
 from volttron.client.vip.agent import Agent
-# from volttrontesting.agent_additions import add_volttron_central, add_volttron_central_platform
+from volttrontesting.agent_additions import add_volttron_central, add_volttron_central_platform
 from volttrontesting.fixtures.cert_fixtures import certs_profile_2
 from volttrontesting.platformwrapper import PlatformWrapper, with_os_environ, UNRESTRICTED
 
@@ -19,15 +17,12 @@ class PlatformWrapperWithWeb(PlatformWrapper):
         super(PlatformWrapperWithWeb, self).__init__(messagebus=messagebus, ssl_auth=ssl_auth,
                                                      instance_name=instance_name, secure_agent_users=secure_agent_users,
                                                      remote_platform_ca=remote_platform_ca)
-
-        # By default no web server should be started.
         self.bind_web_address = None
         self.discovery_address = None
         self.jsonrpc_endpoint = None
         self.volttron_central_address = None
         self.volttron_central_serverkey = None
         self.serverkey = None
-
         self._web_admin_api = None
 
     @property
@@ -133,37 +128,22 @@ class PlatformWrapperWithWeb(PlatformWrapper):
                 'volttron_central_serverkey': volttron_central_serverkey
             })
 
-            service_config_file = Path(self.volttron_home).joinpath("service_config.yml")
-            if service_config_file.exists():
-                with open(service_config_file, 'r') as f:
-                    service_config = yaml.load(f, yaml.BaseLoader)
-            else:
-                service_config = {}
-            if not service_config.get('volttron.services.web'):
-                service_config['volttron.services.web'] = {}
-            if not service_config['volttron.services.web'].get('kwargs'):
-                service_config['volttron.services.web']['kwargs'] = {}
-            if not service_config['volttron.services.web'].get('enabled'):
-                service_config['volttron.services.web']['enabled'] = True if bind_web_address else False
-
             web_service_kwargs = {}
+            print(f'#### BIND_WEB_ADDRESS IS: {bind_web_address}')
             if bind_web_address:
-                web_service_kwargs['bind-web-address'] = bind_web_address
+                web_service_kwargs['bind_web_address'] = bind_web_address
             if web_secret_key:
-                web_service_kwargs['web-secret-key'] = web_secret_key
+                web_service_kwargs['web_secret_key'] = web_secret_key
             if web_ssl_cert:
-                web_service_kwargs['web-ssl-cert'] = web_ssl_cert
+                web_service_kwargs['web_ssl_cert'] = web_ssl_cert
             if web_ssl_key:
-                web_service_kwargs['web-ssl-key'] = web_ssl_key
+                web_service_kwargs['web_ssl_key'] = web_ssl_key
             if volttron_central_address:
-                web_service_kwargs['volttron-central-address'] = volttron_central_address
+                web_service_kwargs['volttron_central_address'] = volttron_central_address
             if volttron_central_serverkey:
-                web_service_kwargs['volttron-central-serverkey'] = volttron_central_serverkey
+                web_service_kwargs['volttron_central_serverkey'] = volttron_central_serverkey
 
-            service_config['volttron.services.web']['kwargs'].update(web_service_kwargs)
-            with service_config_file.open("wt") as f:
-                yaml.dump(service_config, f)
-
+            self.add_service_config('volttron.services.web', **web_service_kwargs)
         super(PlatformWrapperWithWeb, self).startup_platform(vip_address, auth_dict, mode, msgdebug, setupmode,
                                                              agent_monitor_frequency, timeout,
                                                              perform_preauth_service_agents)
@@ -181,19 +161,12 @@ class PlatformWrapperWithWeb(PlatformWrapper):
                 while times < 10:
                     times += 1
                     try:
-                        print(f'###################### BUS IS: {self.messagebus} #############################')
-                        print(f'###################### SSL AUTH IS: {self.ssl_auth} ##########################')
-                        print(
-                            f'###################### SELF.DISCOVERY_ADDRESS IS: {self.discovery_address} ###################')
                         if self.ssl_auth:
-                            print(f'############## IN SSL_AUTH BLOCK #################')
                             resp = grequests.get(self.discovery_address,
                                                  verify=self.certsobj.cert_file(self.certsobj.root_ca_name)
                                                  ).send().response
                         else:
-                            print(f'################## IN ELSE BLOCK #######################')
                             resp = grequests.get(self.discovery_address).send().response
-                        print(f'################ RESP IS: {resp} ######################')
                         if resp.ok:
                             self.logit("Has discovery address for {}".format(self.discovery_address))
                             if self.requests_ca_bundle:

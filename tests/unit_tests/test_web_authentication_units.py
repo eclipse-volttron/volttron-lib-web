@@ -10,17 +10,19 @@ from volttron.services.web.admin_endpoints import AdminEndpoints
 from volttron.services.web.authenticate_endpoint import AuthenticateEndpoints
 from volttron.utils.certs import CertWrapper
 from volttron.utils.keystore import get_random_key
+from volttron.utils.messagebus import store_message_bus_config
 
 from volttrontesting.fixtures.cert_fixtures import certs_profile_1
 
 from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
-from volttrontesting.web_utils import get_test_web_env
+from web_utils import get_test_web_env
 
 
 @pytest.mark.parametrize("encryption_type", ("private_key", "tls"))
 def test_jwt_encode(encryption_type):
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        store_message_bus_config('', 'my_instance_name')
         if encryption_type == "private_key":
             algorithm = "HS256"
             encoded_key = get_random_key().encode("utf-8")
@@ -170,7 +172,8 @@ def test_both_private_key_and_passphrase():
                        match="Must use either ssl_private_key or web_secret_key not both!"):
         volttron_home = create_volttron_home()
         with with_os_environ({'VOLTTRON_HOME': volttron_home}):
-            with certs_profile_1(volttron_home) as certs:
+            store_message_bus_config('', 'my_instance_name')
+            with certs_profile_1(f'{volttron_home}/certificates') as certs:
                 AuthenticateEndpoints(web_secret_key=get_random_key(), tls_private_key=certs.server_certs[0].key)
 
 

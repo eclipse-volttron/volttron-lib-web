@@ -1,38 +1,12 @@
 import os
 from pathlib import Path
 import shutil
+
 from unittest.mock import MagicMock
-
-import pytest
-
-from volttron.client.vip.agent import Agent
-from volttron.services.web import PlatformWebService
-
-from volttrontesting.utils import AgentMock
-
-from web_utils import get_test_web_env
+from web_utils import get_test_web_env, mock_platform_web_service
 
 
-@pytest.fixture()
-def mock_platformweb_service() -> PlatformWebService:
-    kwargs = {'bind-web-address': MagicMock()}
-    PlatformWebService.__bases__ = (AgentMock.imitate(Agent, Agent()),)
-    platformweb = PlatformWebService(server_config=MagicMock(),
-                                     serverkey=MagicMock(),
-                                     identity=MagicMock(),
-                                     address=MagicMock(),
-                                     **kwargs)
-    # rpc_caller = platformweb.vip.rpc
-    # platformweb._admin_endpoints = AdminEndpoints(rpc_caller=rpc_caller)
-
-    # Internally the register uses this value to determine the caller's identity
-    # to allow the platform web service to map calls back to the proper agent
-    platformweb.vip.rpc.context.vip_message.peer.return_value = "foo"
-
-    yield platformweb
-
-
-def test_register_routes(mock_platformweb_service):
+def test_register_routes(mock_platform_web_service):
     html_root = "/tmp/junk/html"
     attempt_to_get_file = "/tmp/junk/index.html"
     should_get_index_file = os.path.join(html_root, "index.html")
@@ -46,7 +20,7 @@ def test_register_routes(mock_platformweb_service):
         with open(should_get_index_file, "w") as should_get:
             should_get.write(file_contents_good)
 
-        pws = mock_platformweb_service
+        pws = mock_platform_web_service
 
         pws.register_path_route(f"/.*", html_root)
         pws.register_path_route(f"/flubber", ".")

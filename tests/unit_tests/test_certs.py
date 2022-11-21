@@ -1,10 +1,11 @@
 import json
 import os
 import pytest
-import shutil
+
 from pathlib import Path
-from volttron.utils.certs import Certs, Subject, CertError
-from volttron.utils.context import ClientContext
+from volttron.utils.certs import Certs
+from volttron.utils.messagebus import store_message_bus_config
+
 from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
 from volttrontesting.certs_utils import TLSRepository
 
@@ -64,55 +65,33 @@ ssl: 'true'
 rmq-home: "~/rabbitmq_server/rabbitmq_server-3.9.7"
 """
 
-def _temp_csr():
+
+def _temp_csr(volttron_home):
     """
         Create a Certificate Signing Request (CSR) using the Certs class.
         Use this CSR to test approving, denying, and deleting CSRs
         """
-    certs = Certs()
-    data = {'C': 'US',
-            'ST': 'Washington',
-            'L': 'Richland',
-            'O': 'pnnl',
-            'OU': 'volttron',
-            'CN': INSTANCE_NAME + "_root_ca"}
-    certs.create_root_ca(**data)
-    assert certs.ca_exists()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        certs = Certs()
+        data = {'C': 'US',
+                'ST': 'Washington',
+                'L': 'Richland',
+                'O': 'pnnl',
+                'OU': 'volttron',
+                'CN': INSTANCE_NAME + "_root_ca"}
+        certs.create_root_ca(**data)
+        assert certs.ca_exists()
 
-    certs.create_signed_cert_files(name="FullyQualifiedIdentity", ca_name=certs.root_ca_name)
+        certs.create_signed_cert_files(name="FullyQualifiedIdentity", ca_name=certs.root_ca_name)
 
-    csr = certs.create_csr("FullyQualifiedIdentity", "RemoteInstanceName")
-    return certs, csr
-
-
-@pytest.fixture(scope="function")
-def temp_csr(request):
-    """
-    Create a Certificate Signing Request (CSR) using the Certs class.
-    Use this CSR to test approving, denying, and deleting CSRs
-    """
-    certs = Certs()
-    data = {'C': 'US',
-            'ST': 'Washington',
-            'L': 'Richland',
-            'O': 'pnnl',
-            'OU': 'volttron',
-            'CN': INSTANCE_NAME+"_root_ca"}
-    certs.create_root_ca(**data)
-    assert certs.ca_exists()
-
-    certs.create_signed_cert_files(name="FullyQualifiedIdentity", ca_name=certs.root_ca_name)
-
-    csr = certs.create_csr("FullyQualifiedIdentity", "RemoteInstanceName")
-    yield certs, csr
-
-    shutil.rmtree(certs.default_certs_dir, ignore_errors=True)
-    assert not os.path.exists(certs.default_certs_dir)
+        csr = certs.create_csr("FullyQualifiedIdentity", "RemoteInstanceName")
+        return certs, csr
 
 
 def test_certificate_directories():
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        store_message_bus_config('', 'my_instance_name')
         certs = Certs()
         paths = (certs.certs_pending_dir, certs.private_dir, certs.cert_dir,
                  certs.remote_cert_dir, certs.csr_pending_dir, certs.ca_db_dir)
@@ -145,7 +124,7 @@ def test_create_root_ca():
 def test_create_signed_cert_files():
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
-
+        store_message_bus_config('', 'my_instance_name')
         certs = Certs()
         assert not certs.cert_exists("test_cert")
 
@@ -191,12 +170,12 @@ def test_create_csr():
         assert csr_info != None
 
 
-def test_approve_csr(temp_csr):
+def test_approve_csr():
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
-        #certs = temp_csr[0]
-        #csr = temp_csr[1]
-        certs, csr = _temp_csr()
+        store_message_bus_config('', 'my_instance_name')
+        certs, csr = _temp_csr(volttron_home)
+
         # Save pending CSR request into a CSR file
         csr_file = certs.save_pending_csr_request("10.1.1.1", "test_csr", csr)
         f = open(csr_file, "rb")
@@ -221,11 +200,11 @@ def test_approve_csr(temp_csr):
         assert approved_csr_meta_data['status'] == "APPROVED"
 
 
-def test_deny_csr(temp_csr):
+def test_deny_csr():
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
-        certs = temp_csr[0]
-        csr = temp_csr[1]
+        store_message_bus_config('', 'my_instance_name')
+        certs, csr = _temp_csr(volttron_home)
 
         # Save pending CSR request into a CSR file
         csr_file = certs.save_pending_csr_request("10.1.1.1", "test_csr", csr)
@@ -256,11 +235,11 @@ def test_deny_csr(temp_csr):
         assert certs.cert_exists("test_csr") == False
 
 
-def test_delete_csr(temp_csr):
+def test_delete_csr():
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
-        certs = temp_csr[0]
-        csr = temp_csr[1]
+        store_message_bus_config('', 'my_instance_name')
+        certs, csr = _temp_csr(volttron_home)
 
         # Save pending CSR request into a CSR file
         csr_file = certs.save_pending_csr_request("10.1.1.1", "test_csr", csr)

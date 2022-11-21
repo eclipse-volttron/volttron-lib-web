@@ -6,8 +6,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from volttrontesting.utils import get_hostname_and_random_port, get_rand_vip, get_rand_ip_and_port
-
+from volttrontesting.utils import get_rand_vip, get_rand_ip_and_port
 from integration_tests.platform_wrapper_with_web import PlatformWrapperWithWeb as PlatformWrapper
 
 # the following assumes that the testconf.py is in the tests directory.
@@ -71,36 +70,6 @@ def cleanup_wrappers(platforms):
         cleanup_wrapper(p)
 
 
-@pytest.fixture(scope="module",
-                params=[dict(messagebus='zmq', ssl_auth=False)])
-def volttron_instance_msgdebug(request):
-    print("building msgdebug instance")
-    wrapper = build_wrapper(get_rand_vip(),
-                            msgdebug=True,
-                            messagebus=request.param['messagebus'],
-                            ssl_auth=request.param['ssl_auth'])
-
-    try:
-        yield wrapper
-    finally:
-        cleanup_wrapper(wrapper)
-
-
-@pytest.fixture(scope="module")
-def volttron_instance_module_web(request):
-    print("building module instance (using web)")
-    address = get_rand_vip()
-    web_address = "http://{}".format(get_rand_ip_and_port())
-    wrapper = build_wrapper(address,
-                            bind_web_address=web_address,
-                            messagebus='zmq',
-                            ssl_auth=False)
-
-    yield wrapper
-
-    cleanup_wrapper(wrapper)
-
-
 # Generic fixtures. Ideally we want to use the below instead of
 # Use this fixture when you want a single instance of volttron platform for
 # test
@@ -115,7 +84,10 @@ def volttron_instance(request, **kwargs):
     @return: volttron platform instance
     """
     address = kwargs.pop("vip_address", get_rand_vip())
+    protocol = 'https' if kwargs.pop('ssl_auth', False) else 'http'
+    bind_web_address = kwargs.pop("bind_web_address", f'{protocol}://{get_rand_ip_and_port()}')
     wrapper = build_wrapper(address,
+                            bind_web_address=bind_web_address,
                             messagebus=request.param['messagebus'],
                             ssl_auth=request.param['ssl_auth'],
                             **kwargs)
@@ -168,8 +140,11 @@ def get_volttron_instances(request):
         instances = []
         for i in range(0, n):
             address = kwargs.pop("vip_address", get_rand_vip())
+            bind_web_address = kwargs.pop('bind_web_address', f'http://{get_rand_ip_and_port()}')
 
-            wrapper = build_wrapper(address, should_start=should_start,
+            wrapper = build_wrapper(address,
+                                    bind_web_address=bind_web_address,
+                                    should_start=should_start,
                                     messagebus=request.param['messagebus'],
                                     ssl_auth=request.param['ssl_auth'],
                                     **kwargs)
@@ -200,46 +175,3 @@ def get_volttron_instances(request):
         yield get_n_volttron_instances
     finally:
         cleanup()
-
-
-# Use this fixture when you want a single instance of volttron platform for zmq message bus
-# test
-@pytest.fixture(scope="module")
-def volttron_instance_zmq(request):
-    """Fixture that returns a single instance of volttron platform for volttrontesting
-
-    @param request: pytest request object
-    @return: volttron platform instance
-    """
-    address = get_rand_vip()
-
-    wrapper = build_wrapper(address)
-
-    yield wrapper
-
-    cleanup_wrapper(wrapper)
-
-
-@pytest.fixture(scope="module",
-                params=[
-                    dict(messagebus='zmq', ssl_auth=False)
-                ])
-def volttron_instance_web(request):
-    print("volttron_instance_web (messagebus {messagebus} ssl_auth {ssl_auth})".format(**request.param))
-    address = get_rand_vip()
-
-    if request.param['ssl_auth']:
-        hostname, port = get_hostname_and_random_port()
-        web_address = 'https://{hostname}:{port}'.format(hostname=hostname, port=port)
-    else:
-        web_address = "http://{}".format(get_rand_ip_and_port())
-
-    wrapper = build_wrapper(address,
-                            ssl_auth=request.param['ssl_auth'],
-                            messagebus=request.param['messagebus'],
-                            bind_web_address=web_address,
-                            volttron_central_address=web_address)
-
-    yield wrapper
-
-    cleanup_wrapper(wrapper)

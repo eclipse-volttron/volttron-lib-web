@@ -42,13 +42,13 @@ import os
 from volttron.services.web.discovery import DiscoveryInfo
 
 
-def test_discovery_endpoint(volttron_instance_web):
+def test_discovery_endpoint(volttron_instance):
     """
     Test that the correct discovery information is returned
-    :param volttron_instance_web:
+    :param volttron_instance:
     :return:
         """
-    wrapper = volttron_instance_web
+    wrapper = volttron_instance
 
     # Both http and https start with http
     assert wrapper.bind_web_address.startswith('http')

@@ -116,18 +116,15 @@ class PlatformWebService(ServiceInterface, Agent):
     that will be called during the request process.
     """
 
-    def __init__(self, server_config: ServerConfig, **kwargs):
-                 # serverkey, identity, address, bind_web_address,
-                 # volttron_central_address=None, volttron_central_rmq_address=None,
-                 # web_ssl_key=None, web_ssl_cert=None, web_secret_key=None, **kwargs):
+    def __init__(self, server_config: ServerConfig, bind_web_address,
+                 web_ssl_key=None, web_ssl_cert=None, web_secret_key=None, **kwargs):
         """
         Initialize the configuration of the base web service integration within the platform.
 
         """
-        bind_web_address = kwargs.pop("bind-web-address")
-        self._web_secret_key = kwargs.pop("web-secret-key", None)
-        self._ssl_key = kwargs.pop("ssl-key", None)
-        self._ssl_cert = kwargs.pop("ssl-cert", None)
+        self._web_secret_key = web_secret_key
+        self._ssl_key = web_ssl_key
+        self._ssl_cert = web_ssl_cert
         super(PlatformWebService, self).__init__(**kwargs)
 
         # no matter what we need to have a bind-web-address passed to us.
@@ -420,18 +417,18 @@ class PlatformWebService(ServiceInterface, Agent):
         if self.instance_name:
             return_dict['instance-name'] = self.instance_name
 
-        if self.core.messagebus == 'rmq':
-            config = RMQConfig()
-            rmq_address = None
-            if config.is_ssl:
-                rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
-                                                                     vhost=config.virtual_host)
-            else:
-                rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
-                                                                    vhost=config.virtual_host)
-            return_dict['rmq-address'] = rmq_address
-            return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
-                serialization.Encoding.PEM).decode("utf-8")
+        # if self.core.messagebus == 'rmq':
+        #     config = RMQConfig()
+        #     rmq_address = None
+        #     if config.is_ssl:
+        #         rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
+        #                                                              vhost=config.virtual_host)
+        #     else:
+        #         rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
+        #                                                             vhost=config.virtual_host)
+        #     return_dict['rmq-address'] = rmq_address
+        #     return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
+        #         serialization.Encoding.PEM).decode("utf-8")
         return Response(jsonapi.dumps(return_dict), content_type="application/json")
 
     def app_routing(self, env, start_response):

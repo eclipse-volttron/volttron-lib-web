@@ -4,7 +4,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "volttron-web-service"
+name = "volttron-lib-web"
 version = "0.1.0"
 description = ""
 authors = ["Craig Allwardt <craig.allwardt@pnnl.gov>"]
@@ -20,14 +20,12 @@ passlib = "^1.7.4"
 PyJWT = "==1.7.1"
 python = ">=3.8,<4.0"
 treelib = ">=1.6.1"
-# volttron = "^volttron 10.0.1a15"
+volttron = "^10.0.a42"
 
 werkzeug = ">=2.1.2"
 ws4py = ">=0.5.1"
-volttron = {path = "../volttron-core", develop = true}
 requests = "^2.28.1"
 argon2-cffi = "^21.3.0"
-#volttron = "^10.0.1-alpha.24"
 
 [tool.poetry.dev-dependencies]
 # formatting, quality, tests
@@ -42,8 +40,7 @@ pytest-randomly = ">=3.5.0"
 pytest-sugar = ">=0.9.4"
 pytest-xdist = ">=2.2.0"
 types-toml = ">=0.10.1"
-# volttron = {path = "../volttron-core"}
-volttron-testing = {path = "../volttron-testing", develop=true}
+volttron-testing = '>=0.3.1a23'
 
 # tasks
 duty = ">=0.6.0"
