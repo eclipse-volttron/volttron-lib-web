@@ -9,6 +9,22 @@ VOLTTRON™ is an open source platform for distributed sensing and control. The 
 > pip install volttron-lib-web
 ```
 
+Configurations for services, including this web service, reside in a service_config.yml file in the VOLTTRON_HOME
+directory (by default ~/.volttron/service_config.yml). If this file does not already exist, create it and include the
+following:
+
+```yaml
+volttron.services.web:
+  enabled: true
+  kwargs:
+    bind_web_address: http://127.0.0.156:5467
+    web_secret_key: some_string # If not using SSL.
+    web_ssl_cert: /path/to/certificate # Path to the SSL certificate to be used by the web service. 
+    web_ssl_key: /path/to/key # Path to the SSL secret key file used by web service.
+
+
+```
+If using SSL, web_ssl_certificate and web_ssl_key are required. If not using SSL, provide a web_secret_key instead. 
 ### Quick Start
 
  1. Start the platform
