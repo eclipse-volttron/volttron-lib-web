@@ -5,7 +5,7 @@ This library cannot be installed as a VOLTTRON agent is.
 Rather, it must be installed as a python package.
 
 [![Run Pytests](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-test.yml/badge.svg)](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-test.yml)
-[![pypi version](https://img.shields.io/pypi/v/volttron-testing.svg)](https://pypi.org/project/volttron-lib-web/)
+[![pypi version](https://img.shields.io/pypi/v/volttron-lib-web.svg)](https://pypi.org/project/volttron-lib-web/)
 
 ## Requirements
 * python >=3.8
