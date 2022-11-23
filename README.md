@@ -1,17 +1,36 @@
-VOLTTRON™ is an open source platform for distributed sensing and control. The platform provides services for collecting and storing data from buildings and devices and provides an environment for developing applications which interact with that data.
+This package provides web services for the VOLTTRON™ platform.
+This includes a RESTful API for interacting with the platform
+and utility pages for administration and certificate management.
+This library cannot be installed as a VOLTTRON agent as is.
+Rather, it must be installed as a python package.
+
+VOLTTRON™ is an open source platform for distributed sensing and control.
+The platform provides services for collecting and storing data from buildings
+and devices and provides an environment for developing applications which
+interact with that data.
 
 [![Run Pytests](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-test.yml/badge.svg)](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-test.yml)
 [![pypi version](https://img.shields.io/pypi/v/volttron.svg)](https://pypi.org/project/volttron-core/)
 
+## Requirements
+* python >=3.8
+
 ## Installation with Web
+This library can be installed using pip:
 
 ```bash
 > pip install volttron-lib-web
 ```
 
-Configurations for services, including this web service, reside in a service_config.yml file in the VOLTTRON_HOME
-directory (by default ~/.volttron/service_config.yml). If this file does not already exist, create it and include the
-following:
+If VOLTTRON was not already installed, it will be pulled in as a dependency
+when this library is installed.
+
+Once the library is installed, VOLTTRON will not be able to start until the
+web service is configured, Configurations for services, including this, reside
+in a service_config.yml file in the VOLTTRON_HOME directory
+(by default ~/.volttron/service_config.yml).
+If this file does not already exist, create it. To confiured the web service,
+include the following:
 
 ```yaml
 volttron.services.web:
@@ -24,91 +43,39 @@ volttron.services.web:
 
 
 ```
-If using SSL, web_ssl_certificate and web_ssl_key are required. If not using SSL, provide a web_secret_key instead. 
-### Quick Start
+If using SSL, both web_ssl_certificate and web_ssl_key are required
+and web_secret_key should not be included. If SSL is not desired,
+provide a web_secret_key instead and remove the lines for the web_ssl_cert
+and web_ssl_key.
 
- 1. Start the platform
-    ```bash
-    > volttron -vv -l volttron.log &>/dev/null &
-    ```
+Full VOLTTRON documentation is available at [VOLTTRON Readthedocs](https://volttron.readthedocs.io)
 
- 2. Install listener agent
-    ```bash
-    > vctl install volttron-listener
-    ```
+## Development
 
- 3. View status of platform
-    ```bash
-    > vctl status
-    ```
+Please see the following for contributing guidelines [contributing](https://github.com/eclipse-volttron/volttron-core/blob/develop/CONTRIBUTING.md).
 
- 4. Shutdown the platform
-    ```bash
-    > vctl shutdown --platform
-    ```
+Please see the following helpful guide about [developing modular VOLTTRON agents](https://github.com/eclipse-volttron/volttron-core/blob/develop/DEVELOPING_ON_MODULAR.md)
 
-Full VOLTTRON documentation available at [VOLTTRON Readthedocs](https://volttron.readthedocs.io)
+To create a new relational database based historian by extending this library, subclass 
+[DBDriver](https://github.com/eclipse-volttron/volttron-lib-sql-historian/blob/develop/src/historian/sql/basedb.py#L79).
+The subclass should be in a module historian.<database_type>.<database_type>functs.py for it to be dynamically loaded 
+by the base DBDriver. Please refer to [SQLiteHistorian](https://github.com/eclipse-volttron/volttron-sqlitehistorian) as 
+an example
 
-## Contributing to VOLTTRON
+# Disclaimer Notice
 
-Please see the [contributing.md](CONTRIBUTING.md) document before contributing to this repository.
+This material was prepared as an account of work sponsored by an agency of the
+United States Government.  Neither the United States Government nor the United
+States Department of Energy, nor Battelle, nor any of their employees, nor any
+jurisdiction or organization that has cooperated in the development of these
+materials, makes any warranty, express or implied, or assumes any legal
+liability or responsibility for the accuracy, completeness, or usefulness or any
+information, apparatus, product, software, or process disclosed, or represents
+that its use would not infringe privately owned rights.
 
-## Development of VOLTTRON
-
-### Environment
-
-VOLTTRON uses [Poetry](https://python-poetry.org/), a dependency management and packaging tool for Python. If you don't have Poetry installed on your machine, follow [these steps](https://python-poetry.org/docs/#installation) to install it on your machine.
-
-To check if Poetry is installed, run `poetry --version`. If you receive the error 'command not found: poetry', add the following line to your '~/.bashrc' script: ```export PATH=$PATH:$HOME/.poetry/bin```.
-
-#### Recommended configuration for poetry
-
-By default, poetry creates a virtual environment in {cache-dir}/virtualenvs. To configure 'poetry' to create the virtualenv inside this project's root directory, run the following command:
-
-[```poetry config virtualenvs.in-project true```](https://python-poetry.org/docs/configuration)
-
-### Setup
-
- 1. Clone the repository
-    ```bash
-    git clone https://github.com/VOLTTRON/volttron-core -b develop
-    ```
-
- 1. cd into volttron-core directory
-    ```bash
-    cd volttron-core
-    ```
-
- 1. Install volttron into the current directory
-    ```bash
-    poetry install
-    ```
-
- 1. Run tests
-    ```bash
-    poetry run pytest
-    ```
-
- 1. Activate environment (removes the need for add poetry run to all commands)
-    ```bash
-    poetry shell
-    ```
-
- 1. Run volttron
-    ```bash
-    volttron -vv -l volttron.log &>/dev/null &
-    ```
-
-### Using modules to run VOLTTRON
-
-In order to run VOLTTRON from within an ide the recommended way is to run the platform using the modules
-
- ```bash
- > poetry shell
- > python -m volttron.server -vv -l volttron.log &
- > python -m volttron.commands.control -vv status
-```
-
-Please see the [contributing.md](CONTRIBUTING.md) document before contributing to this repository.
-
-Happy Editing!
+Reference herein to any specific commercial product, process, or service by
+trade name, trademark, manufacturer, or otherwise does not necessarily
+constitute or imply its endorsement, recommendation, or favoring by the United
+States Government or any agency thereof, or Battelle Memorial Institute. The
+views and opinions of authors expressed herein do not necessarily state or
+reflect those of the United States Government or any agency thereof.
