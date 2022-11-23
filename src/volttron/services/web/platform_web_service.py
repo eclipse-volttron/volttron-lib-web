@@ -305,10 +305,8 @@ class PlatformWebService(ServiceInterface, Agent):
             self.registeredroutes = out
         del self.pathroutes[identity]
 
-        _log.debug(self.endpoints)
         endpoints = self.endpoints.copy()
         endpoints = {i:endpoints[i] for i in endpoints if endpoints[i][0] != identity}
-        _log.debug(endpoints)
         self.endpoints = endpoints
 
     @RPC.export
@@ -521,7 +519,6 @@ class PlatformWebService(ServiceInterface, Agent):
                     peer, fn = (v[0], v[1])
                     res = self.vip.rpc.call(peer, fn, passenv, data).get(
                         timeout=120)
-                    _log.debug(res)
                     return self.create_response(res, start_response)
 
                 elif t == 'path':  # File service from agents on the platform.
@@ -585,7 +582,6 @@ class PlatformWebService(ServiceInterface, Agent):
         if isinstance(res, dict):
             # Note this is specific to volttron central agent and should
             # probably not be at this level of abstraction.
-            _log.debug('res is a dictionary.')
             if 'error' in res.keys():
                 if res['error']['code'] == UNAUTHORIZED:
                     start_response('401 Unauthorized', [
@@ -700,7 +696,6 @@ class PlatformWebService(ServiceInterface, Agent):
                                                                      "Authentication parameter missing.")),
                                     content_type="application/json")
 
-            _log.debug('RPC METHOD IS: {}'.format(rpcdata.method))
             if not rpcdata.method:
                 return Response(jsonapi.dumps(jsonrpc.json_error(
                     'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
@@ -786,11 +781,8 @@ class PlatformWebService(ServiceInterface, Agent):
                 # can't use it directly therefore we use the -server on the file to specify
                 # the server based file.
                 base_filename = ClientContext.get_fq_identity(self.core.identity) + "-server"
-                _log.debug(f'############### BASE FILENAME: {base_filename} #########################')
                 ssl_cert = self._certs.cert_file(base_filename)
-                _log.debug(f'SSL CERT: {ssl_cert}')
                 ssl_key = self._certs.private_key_file(base_filename)
-                _log.debug(f'SSL KEY: {ssl_key}')
 
                 if not os.path.isfile(ssl_cert) or not os.path.isfile(ssl_key):
                     self._certs.create_signed_cert_files(base_filename, cert_type='server')
