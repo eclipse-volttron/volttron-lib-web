@@ -1,19 +1,15 @@
 This package provides web services for the VOLTTRON™ platform.
 This includes a RESTful API for interacting with the platform
 and utility pages for administration and certificate management.
-This library cannot be installed as a VOLTTRON agent as is.
+This library cannot be installed as a VOLTTRON agent is.
 Rather, it must be installed as a python package.
-
-VOLTTRON™ is an open source platform for distributed sensing and control.
-The platform provides services for collecting and storing data from buildings
-and devices and provides an environment for developing applications which
-interact with that data.
 
 [![Run Pytests](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-test.yml/badge.svg)](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-test.yml)
 [![pypi version](https://img.shields.io/pypi/v/volttron.svg)](https://pypi.org/project/volttron-core/)
 
 ## Requirements
 * python >=3.8
+* volttron >= 10.0
 
 ## Installation with Web
 This library can be installed using pip:
@@ -22,14 +18,11 @@ This library can be installed using pip:
 > pip install volttron-lib-web
 ```
 
-If VOLTTRON was not already installed, it will be pulled in as a dependency
-when this library is installed.
-
 Once the library is installed, VOLTTRON will not be able to start until the
-web service is configured, Configurations for services, including this, reside
+web service is configured. Configurations for services, including this, reside
 in a service_config.yml file in the VOLTTRON_HOME directory
 (by default ~/.volttron/service_config.yml).
-If this file does not already exist, create it. To confiured the web service,
+If this file does not already exist, create it. To configure the web service,
 include the following:
 
 ```yaml
@@ -40,9 +33,8 @@ volttron.services.web:
     web_secret_key: some_string # If not using SSL.
     web_ssl_cert: /path/to/certificate # Path to the SSL certificate to be used by the web service. 
     web_ssl_key: /path/to/key # Path to the SSL secret key file used by web service.
-
-
 ```
+
 If using SSL, both web_ssl_certificate and web_ssl_key are required
 and web_secret_key should not be included. If SSL is not desired,
 provide a web_secret_key instead and remove the lines for the web_ssl_cert
@@ -55,12 +47,6 @@ Full VOLTTRON documentation is available at [VOLTTRON Readthedocs](https://voltt
 Please see the following for contributing guidelines [contributing](https://github.com/eclipse-volttron/volttron-core/blob/develop/CONTRIBUTING.md).
 
 Please see the following helpful guide about [developing modular VOLTTRON agents](https://github.com/eclipse-volttron/volttron-core/blob/develop/DEVELOPING_ON_MODULAR.md)
-
-To create a new relational database based historian by extending this library, subclass 
-[DBDriver](https://github.com/eclipse-volttron/volttron-lib-sql-historian/blob/develop/src/historian/sql/basedb.py#L79).
-The subclass should be in a module historian.<database_type>.<database_type>functs.py for it to be dynamically loaded 
-by the base DBDriver. Please refer to [SQLiteHistorian](https://github.com/eclipse-volttron/volttron-sqlitehistorian) as 
-an example
 
 # Disclaimer Notice
 
