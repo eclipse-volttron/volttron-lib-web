@@ -129,7 +129,6 @@ class PlatformWrapperWithWeb(PlatformWrapper):
             })
 
             web_service_kwargs = {}
-            print(f'#### BIND_WEB_ADDRESS IS: {bind_web_address}')
             if bind_web_address:
                 web_service_kwargs['bind_web_address'] = bind_web_address
             if web_secret_key:
