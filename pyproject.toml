@@ -20,7 +20,7 @@ passlib = "^1.7.4"
 PyJWT = "==1.7.1"
 python = ">=3.8,<4.0"
 treelib = ">=1.6.1"
-volttron = "^10.0.a42"
+volttron = ">=10.0.1a43,<11.0"
 
 werkzeug = ">=2.1.2"
 ws4py = ">=0.5.1"
@@ -40,7 +40,7 @@ pytest-randomly = ">=3.5.0"
 pytest-sugar = ">=0.9.4"
 pytest-xdist = ">=2.2.0"
 types-toml = ">=0.10.1"
-volttron-testing = '>=0.3.1a23'
+volttron-testing = '>=0.3.1a24'
 
 # tasks
 duty = ">=0.6.0"
