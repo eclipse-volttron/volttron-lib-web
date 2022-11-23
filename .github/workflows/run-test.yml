@@ -88,4 +88,9 @@ jobs:
       - name: Install library and run tests
         run: |
           poetry install --no-interaction
-          poetry run pytest
+          poetry run pytest tests/integration_tests/platform_wrapper_with_web.py  
+          poetry run pytest tests/integration_tests/test_admin.py
+          poetry run pytest tests/integration_tests/test_platform_wrapper_with_web.py
+          poetry run pytest tests/integration_tests/test_discovery.py
+          poetry run pytest tests/integration_tests/test_web_authentication_integration.py
+          poetry run pytest tests/unit_tests/
