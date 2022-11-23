@@ -15,7 +15,7 @@ def test_can_authenticate_admin_user(volttron_instance, user_pass):
     webadmin = instance.web_admin_api
 
     user, password = user_pass
-
+    gevent.sleep(1)
     resp = webadmin.authenticate(user, password)
     assert resp.ok
     assert resp.headers.get('Content-Type') == 'application/json'
