@@ -88,5 +88,6 @@ jobs:
       - name: Install library and run tests
         run: |
           poetry install --no-interaction
-          poetry run pytest tests/integration_tests/
-          poetry run pytest tests/unit_tests/
+          poetry add --group dev pytest-github-actions-annotate-failures
+          poetry run pytest --cov=src tests/integration_tests/
+          poetry run pytest --cov=src tests/unit_tests/
