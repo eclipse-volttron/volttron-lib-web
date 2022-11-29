@@ -1,3 +1,27 @@
+# -*- coding: utf-8 -*- {{{
+# ===----------------------------------------------------------------------===
+#
+#                 Installable Component of Eclipse VOLTTRON
+#
+# ===----------------------------------------------------------------------===
+#
+# Copyright 2022 Battelle Memorial Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy
+# of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+#
+# ===----------------------------------------------------------------------===
+# }}}
+
 import logging
 import os
 import re
@@ -6,17 +30,16 @@ from datetime import datetime, timedelta
 import json
 
 import jwt
-from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNotFound
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 from passlib.hash import argon2
 from watchdog_gevent import Observer
+from werkzeug import Response
 
-from volttron.platform import get_home
-from volttron.platform.agent.web import Response
-from volttron.utils import VolttronHomeFileReloader
+from volttron.utils.context import ClientContext
+from volttron.utils.filewatch import VolttronHomeFileReloader
 from volttron.utils.persistance import PersistentDict
 
 _log = logging.getLogger(__name__)
-
 
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
 __TEMPLATE_DIR__ = os.path.join(__PACKAGE_DIR__, "templates")
@@ -50,12 +73,12 @@ class AuthenticateEndpoints(object):
         self._observer = Observer()
         self._observer.schedule(
             VolttronHomeFileReloader("web-users.json", self.reload_userdict),
-            get_home()
+            ClientContext.get_volttron_home()
         )
         self._observer.start()
 
     def reload_userdict(self):
-        webuserpath = os.path.join(get_home(), 'web-users.json')
+        webuserpath = os.path.join(ClientContext.get_volttron_home(), 'web-users.json')
         self._userdict = PersistentDict(webuserpath)
 
     def get_routes(self):
@@ -84,7 +107,7 @@ class AuthenticateEndpoints(object):
         """
         Callback for /authenticate endpoint.
 
-        Routes request based on HTTP method and returns a text/plain encoded token or error.
+        Routes request based on HTTP method and returns an application/json encoded token or error.
 
         :param env:
         :param data:
@@ -100,13 +123,13 @@ class AuthenticateEndpoints(object):
         else:
             error = f"/authenticate endpoint accepts only POST, PUT, or DELETE methods. Received: {method}"
             _log.warning(error)
-            return Response(error, status='405 Method Not Allowed', content_type='text/plain')
+            return Response(json.dumps({'error': error}), status=405, content_type='application/json')
         return response
 
     def get_auth_tokens(self, env, data):
         """
         Creates an authentication refresh and acccss tokens to be returned to the caller.  The
-        response will be a text/plain encoded user.  Data should contain:
+        response will be application/json encoded refresh and access tokens.  Data should contain:
         {
             "username": "<username>",
             "password": "<password>"
@@ -140,12 +163,12 @@ class AuthenticateEndpoints(object):
 
         if error:
             _log.error("Invalid parameters passed: {}".format(error))
-            return Response(error, status='401')
+            return Response(json.dumps({'error': error}), status=401, content_type='application/json')
 
         user = self.__get_user(username, password)
         if user is None:
             _log.error("No matching user for passed username: {}".format(username))
-            return Response('', status='401')
+            return Response(json.dumps({'error': 'Not Authorized'}), status='401', content_type='application/json')
         access_token, refresh_token = self._get_tokens(user)
         response = Response(json.dumps({"refresh_token": refresh_token, "access_token": access_token}),
                             content_type="application/json")
@@ -168,7 +191,7 @@ class AuthenticateEndpoints(object):
     def renew_auth_token(self, env, data):
         """
         Creates a new authentication access token to be returned to the caller.  The
-        response will be a text/plain encoded user.  Request should contain:
+        response will be an application/json encoded access token.  Request should contain:
             • Content Type: application/json
             • Authorization: BEARER <jwt_refresh_token>
             • Body (optional):
@@ -181,21 +204,21 @@ class AuthenticateEndpoints(object):
         :return:
         """
         current_access_token = data.get('current_access_token')
-        from volttron.platform.web import get_bearer, get_user_claim_from_bearer, NotAuthorized
+        from ..web import get_bearer, get_user_claim_from_bearer, NotAuthorized
         try:
             current_refresh_token = get_bearer(env)
             claims = get_user_claim_from_bearer(current_refresh_token, web_secret_key=self._web_secret_key,
                                                 tls_public_key=self._tls_public_key)
         except NotAuthorized:
             _log.error("Unauthorized user attempted to connect to {}".format(env.get('PATH_INFO')))
-            return Response('Unauthorized User', status="401 Unauthorized")
+            return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
 
         except jwt.ExpiredSignatureError:
             _log.error("User attempted to connect to {} with an expired signature".format(env.get('PATH_INFO')))
-            return Response('Unauthorized User', status="401 Unauthorized")
+            return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
 
         if claims.get('grant_type') != 'refresh_token' or not claims.get('groups'):
-            return Response('Invalid refresh token.', status="401 Unauthorized")
+            return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
         else:
             # TODO: Consider blacklisting and reissuing refresh tokens also when used.
             new_access_token, _ = self._get_tokens(claims)
@@ -205,8 +228,8 @@ class AuthenticateEndpoints(object):
 
     def revoke_auth_token(self, env, data):
         # TODO: Blacklist old token? Immediately close websockets?
-        return Response('DELETE /authenticate is not yet implemented', status='501 Not Implemented',
-                        content_type='text/plain')
+        response = {'error': 'DELETE /authenticate is not yet implemented'}
+        return Response(json.dumps(response), status=501, content_type='application/json')
 
     def __get_user(self, username, password):
         """

@@ -1,40 +1,28 @@
 # -*- coding: utf-8 -*- {{{
-# vim: set fenc=utf-8 ft=python sw=4 ts=4 sts=4 et:
+# ===----------------------------------------------------------------------===
 #
-# Copyright 2020, Battelle Memorial Institute.
+#                 Installable Component of Eclipse VOLTTRON
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ===----------------------------------------------------------------------===
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+# Copyright 2022 Battelle Memorial Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy
+# of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
 #
-# This material was prepared as an account of work sponsored by an agency of
-# the United States Government. Neither the United States Government nor the
-# United States Department of Energy, nor Battelle, nor any of their
-# employees, nor any jurisdiction or organization that has cooperated in the
-# development of these materials, makes any warranty, express or
-# implied, or assumes any legal liability or responsibility for the accuracy,
-# completeness, or usefulness or any information, apparatus, product,
-# software, or process disclosed, or represents that its use would not infringe
-# privately owned rights. Reference herein to any specific commercial product,
-# process, or service by trade name, trademark, manufacturer, or otherwise
-# does not necessarily constitute or imply its endorsement, recommendation, or
-# favoring by the United States Government or any agency thereof, or
-# Battelle Memorial Institute. The views and opinions of authors expressed
-# herein do not necessarily state or reflect those of the
-# United States Government or any agency thereof.
-#
-# PACIFIC NORTHWEST NATIONAL LABORATORY operated by
-# BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
-# under Contract DE-AC05-76RL01830
+# ===----------------------------------------------------------------------===
 # }}}
+
+from __future__ import annotations
 
 import base64
 import logging
@@ -42,6 +30,7 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+from pprint import pformat
 from urllib.parse import urlparse, parse_qs
 import zlib
 from collections import defaultdict
@@ -52,34 +41,32 @@ import jwt
 from cryptography.hazmat.primitives import serialization
 from gevent import Greenlet
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from volttron.types import ServiceInterface
+from volttron.types.server_config import ServerConfig
+from werkzeug import Response
 
 from ws4py.server.geventserver import WSGIServer
 
 from .admin_endpoints import AdminEndpoints
+from .vui_endpoints import VUIEndpoints
 from .authenticate_endpoint import AuthenticateEndpoints
 from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
-from volttron.platform.agent import utils
-from volttron.platform.agent.known_identities import \
-    CONTROL, VOLTTRON_CENTRAL, AUTH
-from ..agent.utils import get_fq_identity
-from ..agent.web import Response, JsonResponse
-from ..auth import AuthEntry, AuthFile, AuthFileEntryAlreadyExists
-from ..certs import Certs, CertWrapper
-from ..jsonrpc import (json_result,
-                       json_validate_request,
-                       INVALID_REQUEST, METHOD_NOT_FOUND,
-                       UNHANDLED_EXCEPTION, UNAUTHORIZED,
-                       UNAVAILABLE_PLATFORM, INVALID_PARAMS,
-                       UNAVAILABLE_AGENT, INTERNAL_ERROR, RemoteError)
+from volttron.client.known_identities import CONTROL, VOLTTRON_CENTRAL, AUTH
+from volttron.utils.context import ClientContext
 
-from ..vip.agent import Agent, Core, RPC, Unreachable
-from ..vip.agent.subsystems import query
-from ..vip.socket import encode_key
-from ...platform import jsonapi, jsonrpc, get_platform_config
-from ...platform.aip import AIPplatform
-from ...utils import is_ip_private
-from ...utils.rmq_config_params import RMQConfig
+from volttron.services.auth import AuthEntry, AuthFile, AuthFileEntryAlreadyExists
+from volttron.utils.certs import Certs, CertWrapper
+from volttron.utils.jsonrpc import (json_result, json_validate_request, INVALID_REQUEST, METHOD_NOT_FOUND,
+                                    UNHANDLED_EXCEPTION, UNAUTHORIZED, UNAVAILABLE_PLATFORM, INVALID_PARAMS,
+                                    UNAVAILABLE_AGENT, INTERNAL_ERROR, RemoteError)
+
+from volttron.client.vip.agent import Agent, Core, RPC, Unreachable
+from volttron.client.vip.agent.subsystems import query
+from volttron.utils.keystore import encode_key
+from volttron.utils import jsonapi, jsonrpc
+from volttron.utils.network import is_ip_private
+#from volttron.utils.rmq_config_params import RMQConfig
 
 # must be after importing of utils which imports grequest.
 import requests
@@ -109,49 +96,53 @@ tplenv = Environment(
 )
 
 
-class PlatformWebService(Agent):
+class PlatformWebService(ServiceInterface, Agent):
     """The service that is responsible for managing and serving registered pages
 
     Agents can register either a directory of files to serve or an rpc method
     that will be called during the request process.
     """
 
-    def __init__(self, serverkey, identity, address, bind_web_address,
-                 volttron_central_address=None, volttron_central_rmq_address=None,
+    def __init__(self, server_config: ServerConfig, bind_web_address,
                  web_ssl_key=None, web_ssl_cert=None, web_secret_key=None, **kwargs):
         """
         Initialize the configuration of the base web service integration within the platform.
 
         """
-        super(PlatformWebService, self).__init__(identity, address, **kwargs)
+        self._web_secret_key = web_secret_key
+        self._ssl_key = web_ssl_key
+        self._ssl_cert = web_ssl_cert
+        super(PlatformWebService, self).__init__(**kwargs)
 
-        # no matter what we need to have a bind_web_address passed to us.
+        # no matter what we need to have a bind-web-address passed to us.
         if not bind_web_address:
-            raise ValueError("Invalid bind web address.")
+            raise ValueError("bind-web-address not set in server_config.yml")
 
+        _log.debug(pformat(server_config.opts.__dict__))
         self.bind_web_address = bind_web_address
-        self.serverkey = serverkey
+        self.serverkey = server_config.opts.volttron_publickey
         self.instance_name = None
         self.registeredroutes = []
         self.peerroutes = defaultdict(list)
         self.pathroutes = defaultdict(list)
         # These will be used if set rather than the
         # any of the internal agent's certificates
-        self.web_ssl_key = web_ssl_key
-        self.web_ssl_cert = web_ssl_cert
-        self._web_secret_key = web_secret_key
+        # self.web_ssl_key = web_ssl_key
+        # self.web_ssl_cert = web_ssl_cert
+        # self._web_secret_key = web_secret_key
 
         # Maps from endpoint to peer.
         self.endpoints = {}
 
-        self.volttron_central_address = volttron_central_address
-        self.volttron_central_rmq_address = volttron_central_rmq_address
+        # self.volttron_central_address = volttron_central_address
+        # self.volttron_central_rmq_address = volttron_central_rmq_address
 
         # If vc is this instance then make the vc address the same as
         # the web address.
-        if not self.volttron_central_address:
-            self.volttron_central_address = bind_web_address
+        # if not self.volttron_central_address:
+        #     self.volttron_central_address = bind_web_address
 
+        # Initialize the mimetypes so that we can guess at the passed mimetype
         if not mimetypes.inited:
             mimetypes.init()
 
@@ -164,6 +155,22 @@ class PlatformWebService(Agent):
         self._server_greenlet: Greenlet = None
         # noinspection PyTypeChecker
         self._admin_endpoints: AdminEndpoints = None
+        # noinspection PyTypeChecker
+        self._vui_endpoints: VUIEndpoints = None
+
+    @property
+    def ssl_cert(self) -> str | None:
+        """
+        Web server ssl certificate path
+        """
+        return self._ssl_cert
+
+    @property
+    def ssl_key(self) -> str | None:
+        """
+        Web server ssl key path
+        """
+        return self._ssl_key
 
     # pylint: disable=unused-argument
     @Core.receiver('onsetup')
@@ -186,14 +193,14 @@ class PlatformWebService(Agent):
 
     @RPC.export
     def get_user_claims(self, bearer):
-        from volttron.platform.web import get_user_claim_from_bearer
+        from ..web import get_user_claim_from_bearer
         if self.core.messagebus == 'rmq':
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=self._certs.get_cert_public_key(
-                                                    get_fq_identity(self.core.identity)))
-        elif self.web_ssl_cert is not None:
+                                                    ClientContext.get_fq_identity(self.core.identity)))
+        elif self.ssl_cert is not None:
             claims = get_user_claim_from_bearer(bearer,
-                                                tls_public_key=CertWrapper.get_cert_public_key(self.web_ssl_cert))
+                                                tls_public_key=CertWrapper.get_cert_public_key(self.ssl_cert))
         elif self._web_secret_key is not None:
             claims = get_user_claim_from_bearer(bearer, web_secret_key=self._web_secret_key)
 
@@ -285,10 +292,8 @@ class PlatformWebService(Agent):
             self.registeredroutes = out
         del self.pathroutes[identity]
 
-        _log.debug(self.endpoints)
         endpoints = self.endpoints.copy()
         endpoints = {i:endpoints[i] for i in endpoints if endpoints[i][0] != identity}
-        _log.debug(endpoints)
         self.endpoints = endpoints
 
     @RPC.export
@@ -397,20 +402,19 @@ class PlatformWebService(Agent):
         if self.instance_name:
             return_dict['instance-name'] = self.instance_name
 
-        if self.core.messagebus == 'rmq':
-            config = RMQConfig()
-            rmq_address = None
-            if config.is_ssl:
-                rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
-                                                                     vhost=config.virtual_host)
-            else:
-                rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
-                                                                    vhost=config.virtual_host)
-            return_dict['rmq-address'] = rmq_address
-            return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
-                serialization.Encoding.PEM).decode("utf-8")
+        # if self.core.messagebus == 'rmq':
+        #     config = RMQConfig()
+        #     rmq_address = None
+        #     if config.is_ssl:
+        #         rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
+        #                                                              vhost=config.virtual_host)
+        #     else:
+        #         rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
+        #                                                             vhost=config.virtual_host)
+        #     return_dict['rmq-address'] = rmq_address
+        #     return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
+        #         serialization.Encoding.PEM).decode("utf-8")
         return Response(jsonapi.dumps(return_dict), content_type="application/json")
-        # return JsonResponse(return_dict)
 
     def app_routing(self, env, start_response):
         """
@@ -450,7 +454,7 @@ class PlatformWebService(Agent):
             # parameter so agents can use it to verify the Bearer has specific
             # jwt claims
             passenv['WEB_PUBLIC_KEY'] = env['WEB_PUBLIC_KEY'] = self._certs.get_cert_public_key(
-                get_fq_identity(self.core.identity)).decode('utf-8')
+                ClientContext.get_fq_identity(self.core.identity)).decode('utf-8')
 
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.
@@ -502,7 +506,6 @@ class PlatformWebService(Agent):
                     peer, fn = (v[0], v[1])
                     res = self.vip.rpc.call(peer, fn, passenv, data).get(
                         timeout=120)
-                    _log.debug(res)
                     return self.create_response(res, start_response)
 
                 elif t == 'path':  # File service from agents on the platform.
@@ -566,7 +569,6 @@ class PlatformWebService(Agent):
         if isinstance(res, dict):
             # Note this is specific to volttron central agent and should
             # probably not be at this level of abstraction.
-            _log.debug('res is a dictionary.')
             if 'error' in res.keys():
                 if res['error']['code'] == UNAUTHORIZED:
                     start_response('401 Unauthorized', [
@@ -661,8 +663,8 @@ class PlatformWebService(Agent):
         :return object: An JSON-RPC 2.0 response.
         """
         if env['REQUEST_METHOD'].upper() != 'POST':
-            return JsonResponse(jsonapi.dumps(jsonrpc.json_error('NA', INVALID_REQUEST,
-                                      'Invalid request method, only POST allowed')))
+            return Response(jsonapi.dumps(jsonrpc.json_error('NA', INVALID_REQUEST,
+                                      'Invalid request method, only POST allowed')), content_type="application/json")
 
         try:
             rpcdata = self._to_jsonrpc_obj(data)
@@ -673,16 +675,17 @@ class PlatformWebService(Agent):
                 if self.jsonrpc_verify_and_dispatch(rpcdata.params['authentication']):
                     del rpcdata.params['authentication']
                 else:
-                    return JsonResponse(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                           "Invalid username/password specified.")))
+                    return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
+                                                           "Invalid username/password specified.")),
+                                        content_type="application/json")
             else:
-                return JsonResponse(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                       "Authentication parameter missing.")))
+                return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
+                                                                     "Authentication parameter missing.")),
+                                    content_type="application/json")
 
-            _log.debug('RPC METHOD IS: {}'.format(rpcdata.method))
             if not rpcdata.method:
-                return JsonResponse(jsonapi.dumps(jsonrpc.json_error(
-                    'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))))
+                return Response(jsonapi.dumps(jsonrpc.json_error(
+                    'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
             else:
                 if rpcdata.params:
                     result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method, **rpcdata.params).get()
@@ -690,21 +693,21 @@ class PlatformWebService(Agent):
                     result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method).get()
 
         except AssertionError:
-            return JsonResponse(jsonapi.dumps(jsonrpc.json_error(
-                'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))))
+            return Response(jsonapi.dumps(jsonrpc.json_error(
+                'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
         except Unreachable:
-            return JsonResponse(jsonapi.dumps(jsonrpc.json_error(
-                rpcdata.id, UNAVAILABLE_PLATFORM,
-                "Couldn't reach platform with method {} params: {}".format(
-                    rpcdata.method,
-                    rpcdata.params))))
+            return Response(
+                jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAVAILABLE_PLATFORM,
+                                                 "Couldn't reach platform with method {} params: {}".format(
+                                                     rpcdata.method, rpcdata.params))),
+                content_type="application/json")
         except Exception as e:
 
-            return JsonResponse(jsonapi.dumps(jsonrpc.json_error(
-                'NA', UNHANDLED_EXCEPTION, e
-            )))
+            return Response(jsonapi.dumps(jsonrpc.json_error('NA', UNHANDLED_EXCEPTION, e)),
+                                content_type="application/json")
 
-        return JsonResponse(jsonapi.dumps(self._get_jsonrpc_response(rpcdata.id, result_or_error)))
+        return Response(jsonapi.dumps(self._get_jsonrpc_response(rpcdata.id, result_or_error)),
+                            content_type="application/json")
 
     def _get_jsonrpc_response(self, id, result_or_error):
         """ Wrap the response in either a json-rpc error or result.
@@ -730,7 +733,7 @@ class PlatformWebService(Agent):
         :param authentication: authentication generated by successful authentication
         :return: Boolean
         """
-        from volttron.platform.web import NotAuthorized
+        from ..web import NotAuthorized
         try:
             claims = self.get_user_claims(authentication)
         except NotAuthorized:
@@ -750,21 +753,21 @@ class PlatformWebService(Agent):
         from urllib.parse import urlparse
         parsed = urlparse(self.bind_web_address)
 
-        ssl_key = self.web_ssl_key
-        ssl_cert = self.web_ssl_cert
+        ssl_key = self._ssl_key
+        ssl_cert = self._ssl_cert
         rpc_caller = self.vip.rpc
         if parsed.scheme == 'https':
             # Admin interface is only availble to rmq at present.
             if self.core.messagebus == 'rmq':
                 self._admin_endpoints = AdminEndpoints(rmq_mgmt=self.core.rmq_mgmt,
                                                        ssl_public_key=self._certs.get_cert_public_key(
-                                                           get_fq_identity(self.core.identity)),
+                                                           ClientContext.get_fq_identity(self.core.identity)),
                                                        rpc_caller=rpc_caller)
             if ssl_key is None or ssl_cert is None:
                 # Because the  platform.web service certificate is a client to rabbitmq we
                 # can't use it directly therefore we use the -server on the file to specify
                 # the server based file.
-                base_filename = get_fq_identity(self.core.identity) + "-server"
+                base_filename = ClientContext.get_fq_identity(self.core.identity) + "-server"
                 ssl_cert = self._certs.cert_file(base_filename)
                 ssl_key = self._certs.private_key_file(base_filename)
 
@@ -800,11 +803,15 @@ class PlatformWebService(Agent):
         for rt in self._admin_endpoints.get_routes():
             self.registeredroutes.append(rt)
 
+        # Register VUI endpoints:
+        self._vui_endpoints = VUIEndpoints(self)
+        self.registeredroutes.extend(self._vui_endpoints.get_routes())
+
         # Allow authentication endpoint from any https connection
         if parsed.scheme == 'https':
             if self.core.messagebus == 'rmq':
-                ssl_private_key = self._certs.get_pk_bytes(get_fq_identity(self.core.identity))
-                ssl_public_key = self._certs.get_cert_public_key(get_fq_identity(self.core.identity))
+                ssl_private_key = self._certs.get_pk_bytes(ClientContext.get_fq_identity(self.core.identity))
+                ssl_public_key = self._certs.get_cert_public_key(ClientContext.get_fq_identity(self.core.identity))
             else:
                 ssl_private_key = CertWrapper.get_private_key(ssl_key)
                 ssl_public_key = CertWrapper.get_cert_public_key(self.web_ssl_cert)

@@ -4,40 +4,49 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-name = "volttron-web-service"
-version = "0.1.0"
-description = ""
-authors = ["Craig Allwardt <craig.allwardt@pnnl.gov>"]
+name = "volttron-lib-web"
+version = "0.2.0-rc"
+description = "The volttron-lib-web library extends the platform by exposing a web based REST api and allows extension web agents to register with the platform."
+authors = ["VOLTTRON Team <volttron@pnnl.gov>"]
 license = "2022"
 readme = "README.md"
-repository = "https://github.com/VOLTTRON/volttron-web-services"
+repository = "https://github.com/eclipse-volttron/volttron-lib-web"
 homepage = "https://volttron.readthedocs.io"
 keywords = []
-packages = [ {include="volttron"} ]
+packages = [ {include="volttron", from = "src" } ]
 
 [tool.poetry.dependencies]
+jinja2-cli = ">=0.7.0"
+passlib = "^1.7.4"
+PyJWT = "==1.7.1"
 python = ">=3.8,<4.0"
+treelib = ">=1.6.1"
+volttron = ">=10.0.2rc0,<11.0"
 
-volttron = ">=0.1.0"
+werkzeug = ">=2.1.2"
+ws4py = ">=0.5.1"
+requests = "^2.28.1"
+argon2-cffi = "^21.3.0"
 
 [tool.poetry.dev-dependencies]
 # formatting, quality, tests
 autoflake = ">=1.4"
+deepdiff = ">=5.8.1"
 isort = ">=5.7.0"
+mock = "^4.0.3"
 mypy = ">=0.812"
 pytest = ">=6.2.2"
-pytest-cov = ">=2.11.1"
+pytest-cov = "^3.0.0"
 pytest-randomly = ">=3.5.0"
 pytest-sugar = ">=0.9.4"
 pytest-xdist = ">=2.2.0"
 types-toml = ">=0.10.1"
-volttron = {path = "../volttron-core"}
+volttron-testing = '>=0.4.0rc0'
 
 # tasks
 duty = ">=0.6.0"
 git-changelog = ">=0.5.0"
 httpx = ">=0.16.1"
-jinja2-cli = ">=0.7.0"
 toml = ">=0.10.2"
 
 # flake8 plugins

@@ -1,39 +1,25 @@
 # -*- coding: utf-8 -*- {{{
-# vim: set fenc=utf-8 ft=python sw=4 ts=4 sts=4 et:
+# ===----------------------------------------------------------------------===
 #
-# Copyright 2020, Battelle Memorial Institute.
+#                 Installable Component of Eclipse VOLTTRON
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ===----------------------------------------------------------------------===
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+# Copyright 2022 Battelle Memorial Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy
+# of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
 #
-# This material was prepared as an account of work sponsored by an agency of
-# the United States Government. Neither the United States Government nor the
-# United States Department of Energy, nor Battelle, nor any of their
-# employees, nor any jurisdiction or organization that has cooperated in the
-# development of these materials, makes any warranty, express or
-# implied, or assumes any legal liability or responsibility for the accuracy,
-# completeness, or usefulness or any information, apparatus, product,
-# software, or process disclosed, or represents that its use would not infringe
-# privately owned rights. Reference herein to any specific commercial product,
-# process, or service by trade name, trademark, manufacturer, or otherwise
-# does not necessarily constitute or imply its endorsement, recommendation, or
-# favoring by the United States Government or any agency thereof, or
-# Battelle Memorial Institute. The views and opinions of authors expressed
-# herein do not necessarily state or reflect those of the
-# United States Government or any agency thereof.
-#
-# PACIFIC NORTHWEST NATIONAL LABORATORY operated by
-# BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
-# under Contract DE-AC05-76RL01830
+# ===----------------------------------------------------------------------===
 # }}}
 
 import logging
@@ -41,8 +27,8 @@ import os
 import re
 from urllib.parse import parse_qs
 
-from volttron.platform.agent.known_identities import PLATFORM_WEB, AUTH
-from volttron.platform.jsonrpc import RemoteError
+from volttron.client.known_identities import PLATFORM_WEB, AUTH
+from volttron.utils.jsonrpc import RemoteError
 
 try:
     from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNotFound
@@ -55,13 +41,13 @@ except ImportError:
     logging.getLogger().warning("Missing passlib library in admin_endpoints.py")
 
 from watchdog_gevent import Observer
-from volttron.platform.agent.web import Response
+from werkzeug import Response
 
-from ...platform import get_home
-from ...platform import jsonapi
-from ...platform.certs import Certs
-from ...utils import VolttronHomeFileReloader
-from ...utils.persistance import PersistentDict
+from volttron.utils.context import ClientContext
+from volttron.utils import jsonapi
+from volttron.utils.certs import Certs
+from volttron.utils.filewatch import VolttronHomeFileReloader
+from volttron.utils.persistance import PersistentDict
 
 
 _log = logging.getLogger(__name__)
@@ -105,12 +91,12 @@ class AdminEndpoints(object):
         self._observer = Observer()
         self._observer.schedule(
             VolttronHomeFileReloader("web-users.json", self.reload_userdict),
-            get_home()
+            ClientContext.get_volttron_home()
         )
         self._observer.start()
 
     def reload_userdict(self):
-        webuserpath = os.path.join(get_home(), 'web-users.json')
+        webuserpath = os.path.join(ClientContext.get_volttron_home(), 'web-users.json')
         self._userdict = PersistentDict(webuserpath, format="json")
 
     def get_routes(self):
@@ -135,7 +121,7 @@ class AdminEndpoints(object):
 
                 if pass1 == pass2 and pass1 is not None:
                     _log.debug("Setting administrator password")
-                    self.add_user(username, pass1, groups=['admin'])
+                    self.add_user(username, pass1, groups=['admin', 'vui'])
                     return Response('', status='302', headers={'Location': '/admin/login.html'})
 
             template = template_env(env).get_template('first.html')
@@ -155,7 +141,7 @@ class AdminEndpoints(object):
         :param data: data associated with a web form or json/xml request data
         :return: Response object.
         """
-        from volttron.platform.web import get_bearer, NotAuthorized
+        from ..web import get_bearer, NotAuthorized
         try:
             claims = self._rpc_caller(PLATFORM_WEB, 'get_user_claims', get_bearer(env)).get()
         except NotAuthorized:
@@ -208,7 +194,7 @@ class AdminEndpoints(object):
                 # A template with no params.
                 html = template.render()
 
-            return Response(html)
+            return Response(html, content_type="text/html")
 
         template = template_env(env).get_template('index.html')
         resp = template.render()
