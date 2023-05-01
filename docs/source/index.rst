@@ -11,75 +11,53 @@ The VUI is a RESTful HTTP API for communicating with components of the VOLTTRON 
 Installation
 ------------
 The VUI is a built-in part of the VOLTTRON Web Service. To enable to VOLTTRON Web Service,
-bootstrap VOLTTRON within the virtual environment using the `--web` option:
+install the volttron-lib-web library:
 
 .. code-block:: bash
 
-    python boostrap.py --web
+    pip install volttron-lib-web
 
-Additionally, to enable the web service, it is necessary to add a `bind-web-address` key to the
-``$VOLTTRON_HOME/config`` file. The value of this key represents address bound to by the  platform web service for
-handling HTTP(s) requests. Typical addresses would be ``https://<hostname_or_ip>:8443`` or
-``http://<hostname_or_ip>:8080``.
+Once the library is installed, VOLTTRON will not be able to start until the web service is configured.
+Configurations for services, including this, reside in a service_config.yml file in the VOLTTRON_HOME directory
+(by default ~/.volttron/service_config.yml). If this file does not already exist, create it.
+To configure the web service, include the following:
+
+.. code-block:: yaml
+
+    volttron.services.web:
+      enabled: true
+      kwargs:
+        bind_web_address: http://192.168.0.101:8080
+        web_secret_key: some_string # If not using SSL.
+        web_ssl_cert: /path/to/certificate # Path to the SSL certificate to be used by the web service.
+        web_ssl_key: /path/to/key # Path to the SSL secret key file used by web service.
+
+The value of the ``bound_web_address`` key represents address to which the platform web service listens
+for HTTP(s) requests. Typical addresses would be ``https://<hostname_or_ip>:8443`` or
+``http://<hostname_or_ip>:8080``, and will most often be the IP address of the host on which the web service
+is installed. Setting the bind_web_address to 0.0.0.0 will bind to all interfaces on the machine. 127.0.0.1 or
+localhost can be used if it is not desired for the web services to be reachable by other hosts.
 
 .. Note::
+
     If a hostname is used, it must be resolvable for the service to work as expected.
 
-HTTPS is strongly recommended. When https is used, however, it will also be necessary to include `web-ssl-cert` and
-`web-ssl-key` entries in the ``$VOLTTRON_HOME/config`` file:
+The port number (after the colon) can be any port which is not bound to another service on the host mahcine.
+80 or 8080 are common ports when not using SSL. 443 and 8443 are common ports to use when using SSL.
+
+HTTPS is strongly recommended. If using SSL, both web_ssl_certificate and web_ssl_key are required
+and web_secret_key should not be included. If SSL is not desired, provide a web_secret_key instead and remove the
+lines for the web_ssl_cert and web_ssl_key. Any string can be used for the web_secret_key.
+
+Additionally, in order to use many of the API endpoints, an instance name must be set in the VOLTTRON platform
+configuration file in VOLTTRON_HOME (by default ~/.volttron/config).  If this file does not already exist, create it.
+Ensure that it contains at least the following (where "my_instance_name" will be the name of this platform):
 
 .. code-block:: ini
 
     [volttron]
-    message-bus = zmq
-    instance-name = my_instance
-    vip-address = tcp://127.0.0.1:22916
-    bind-web-address = https://<hostname>:8443
-    web-ssl-cert = /home/volttron/.volttron/certificates/certs/platform_web-server.crt
-    web-ssl-key = /home/volttron/.volttron/certificates/private/platform_web-server.pem
+    instance-name=my_instance_name
 
-The ``vcfg`` tool may be used to make the changes to the ``$VOLTTRON_HOME/config`` file by choosing "Y" for the "Is this
-instance web enabled?" prompt. To use HTTPS, enter "https" when asked "What is the protocol for this instance?".
-The ``vcfg`` tool will then give the option to generate the required SSL cert and key if these do not already exist.
-
-.. code-block:: console
-
-    (volttron) [volttron@my_instance volttron]$ vcfg
-
-    Your VOLTTRON_HOME currently set to: /home/volttron/.volttron
-
-    Is this the volttron you are attempting to setup? [Y]: y
-    What type of message bus (rmq/zmq)? [zmq]:
-    What is the vip address? [tcp://127.0.0.1]:
-    What is the port for the vip address? [22916]:
-    What is the name of this instance? [my_instance]:
-    Is this instance web enabled? [N]: y
-    What is the protocol for this instance? [http]: https
-    Web address set to: https://127.0.0.1
-    What is the port for this instance? [8080]: 8443
-    Would you like to generate a new web certificate? [Y]: y
-    WARNING! CA certificate does not exist.
-    Create new root CA? [Y]: y
-
-    Please enter the following details for web server certificate:
-	    Country: [US]:
-	    State: WA
-	    Location: MyTown
-	    Organization: My Organization
-	    Organization Unit:
-    Created CA cert
-    Creating new web server certificate.
-    Is this an instance of volttron central? [N]: n
-    Will this instance be controlled by volttron central? [Y]: n
-    Would you like to install a platform historian? [N]: n
-    Would you like to install a platform driver? [N]: n
-    Would you like to install a listener agent? [N]:
-    Finished configuration!
-
-    You can now start the volttron instance.
-
-    If you need to change the instance configuration you can edit
-    the config file is at /home/volttron/.volttron/config
 
 Finally, a user must be configured in the ``$VOLTTRON_HOME/web-users.json`` file to allow authentication to the API.
 This file can be generated, if it does not exist, by navigating to `bind-web-address`/admin in a web browser and

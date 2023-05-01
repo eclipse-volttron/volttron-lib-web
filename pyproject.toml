@@ -19,7 +19,7 @@ packages = [ {include="volttron", from = "src" } ]
 jinja2-cli = ">=0.7.0"
 passlib = "^1.7.4"
 PyJWT = "==1.7.1"
-python = ">=3.8,<4.0"
+python = ">=3.10,<4.0"
 treelib = ">=1.6.1"
 volttron = ">=10.0.2rc0,<11.0"
 
