@@ -4,6 +4,8 @@ and utility pages for administration and certificate management.
 This library cannot be installed as a VOLTTRON agent is.
 Rather, it must be installed as a python package.
 
+![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
 [![Run Pytests](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-tests.yml/badge.svg)](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-tests.yml)
 [![pypi version](https://img.shields.io/pypi/v/volttron-lib-web.svg)](https://pypi.org/project/volttron-lib-web/)
 
