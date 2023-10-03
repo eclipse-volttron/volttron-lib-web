@@ -37,7 +37,7 @@ from werkzeug.urls import url_decode
 from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
 from volttron.client.vip.agent.subsystems.query import Query
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
-from .topic_tree import DeviceTree, TopicTree
+from volttron.lib.topic_tree import DeviceTree, TopicTree
 from .vui_pubsub import VUIPubsubManager
 
 

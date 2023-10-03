@@ -65,7 +65,7 @@ creating a user and password:
 
 .. image:: files/create_admin_user.png
 
-.. code-block:: json
+.. code-block:: javascript
 
     {
     "my_user":{
@@ -98,7 +98,7 @@ to be readable and discoverable:
 Get requests to non-leaf nodes typically return a `route-options` JSON object which gives additional possible paths
 within the API. For instance, a GET request send to the path `/vui` will return:
 
-.. code-block:: json
+.. code-block:: javascript
 
     {
     "route_options": {

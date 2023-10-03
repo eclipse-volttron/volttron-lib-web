@@ -33,7 +33,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -46,7 +46,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -81,7 +81,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "params": {
@@ -106,7 +106,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -132,7 +132,7 @@ Request:
 * Authorization: ``BEARER <jwt_access_token>``
 * Body:
 
-  .. code-block:: JSON
+  .. code-block:: javascript
 
         {
             "<param_name>": "<value>",
@@ -150,7 +150,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"

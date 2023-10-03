@@ -47,7 +47,7 @@ Request:
 - Content Type: ``application/json``
 - Body:
 
-  .. code-block:: JSON
+  .. code-block:: javascript
 
         {
             "username": "<username>",
@@ -61,7 +61,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "refresh_token": "<jwt_refresh_token>",
@@ -90,7 +90,7 @@ Request:
 - Authorization: ``BEARER <jwt_refresh_token>``
 - Body (optional):
 
-  .. code-block:: JSON
+  .. code-block:: javascript
 
         {
           "current_access_token": "<jwt_access_token>"
@@ -103,7 +103,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "access_token": "<new_jwt_access_token>"

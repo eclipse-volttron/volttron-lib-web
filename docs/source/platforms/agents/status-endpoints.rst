@@ -14,7 +14,7 @@ a single agent running on a VOLTTRON platform. Only a GET method is currently im
 --------------
 
 GET /platforms/:platform/agents/:agent/status
-===============================
+=============================================
 
 Get status for a specific agent on the platform.
 
@@ -30,7 +30,7 @@ Response:
         - Content Type: ``application/json``
         - Body:
 
-          .. code-block:: json
+          .. code-block:: javascript
 
                 {
                  "name": "<wheel_name>",
@@ -47,7 +47,7 @@ Response:
         - Content Type: ``application/json``
         - Body:
 
-          .. code-block:: JSON
+          .. code-block:: javascript
 
                 {
                     "error": "<Error Message>"

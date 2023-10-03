@@ -59,7 +59,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "<historian>": "/vui/platforms/:platform/historians/:historian",
@@ -72,7 +72,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"
@@ -101,7 +101,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "topics": "/vui/platforms/:platform/historians/:historian/topics"
@@ -113,7 +113,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"
@@ -180,7 +180,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
             "Campus/Building1/Fake2/SampleWritableFloat1": {
@@ -204,7 +204,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
             "Campus/Building1/Fake2/SampleWritableFloat1": {
@@ -231,7 +231,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"

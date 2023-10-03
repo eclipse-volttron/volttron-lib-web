@@ -30,7 +30,7 @@ Response:
     - Content Type: application/json
     - Body:
 
-      .. code-block:: json
+      .. code-block:: javascript
 
          {
             "<vip_identity>": {
@@ -46,7 +46,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"

@@ -50,7 +50,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -63,7 +63,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -91,7 +91,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -104,7 +104,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
              "error": "<Error Message>"

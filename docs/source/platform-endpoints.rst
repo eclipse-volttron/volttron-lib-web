@@ -28,6 +28,7 @@ through the following links:
     All endpoints in this tree require authorization using a JWT bearer
     token provided by the ``POST /authenticate`` or ``PUT /authenticate``
     endpoints.
+
 --------------------------------------------------------------------------------
 
 GET /platforms
@@ -51,7 +52,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -64,13 +65,14 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
              "error": "<Error Message>"
             }
 
 * **With invalid BEARER token:** ``401 Unauthorized``
+
 ---------------------------------------------------------------------------------------------------------------------
 
 GET /platforms/:platform
@@ -98,7 +100,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -111,7 +113,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
              "error": "<Error Message>"

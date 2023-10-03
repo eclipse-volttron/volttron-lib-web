@@ -30,7 +30,7 @@ Response:
     - Content Type: application/json
     - Body:
 
-      .. code-block:: json
+      .. code-block:: javascript
 
             {
                 "tag": "<tag>"
@@ -39,7 +39,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -62,7 +62,7 @@ Request:
 * Content Type: ``application/json``
 * Body:
 
-  .. code-block:: json
+  .. code-block:: javascript
 
         {
             "tag": "<tag>"
@@ -77,7 +77,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                "error": "<Error Message>"
@@ -107,7 +107,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"

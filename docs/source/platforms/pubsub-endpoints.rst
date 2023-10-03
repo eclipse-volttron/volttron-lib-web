@@ -28,7 +28,7 @@ Response:
 -  **With valid BEARER token on success:** ``200 OK``
     -  Body:
 
-       .. code-block:: JSON
+       .. code-block:: javascript
 
             [
                 "/vui/platform/:platform/pubsub/:topic",
@@ -41,7 +41,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"
@@ -89,7 +89,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
           {
               "error": "<Error Message>"
@@ -119,7 +119,7 @@ Request:
 
 -  Body:
 
-   .. code-block:: JSON
+   .. code-block:: javascript
 
       {
           "headers": {<message_bus_headers>},
@@ -135,7 +135,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "number_of_subscribers": <number_of_subscribers>
@@ -147,7 +147,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"
@@ -181,7 +181,7 @@ Response:
 
     -  Body:
 
-       .. code-block:: JSON
+       .. code-block:: javascript
 
             {
                 "error": "<Error Message>"

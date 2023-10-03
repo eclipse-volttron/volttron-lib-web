@@ -83,7 +83,7 @@ Response:
             where two segments were provided (the topic provided was `MyCampus/Building1`.
             Devices within the building are returned:
 
-            .. code-block:: JSON
+            .. code-block:: javascript
 
                 {
                     "route_options": {
@@ -98,7 +98,7 @@ Response:
             ``read-all`` does not need to be ``true`` for this case to get data, as a point segment was provided.
             Other query parameters were not provided or were set to their default values.
 
-            .. code-block:: JSON
+            .. code-block:: javascript
 
                 {
                     "MyCampus/Building1/Device1/Point4": {
@@ -118,7 +118,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -153,7 +153,7 @@ Request:
 
 * Body:
 
-  .. code-block:: JSON
+  .. code-block:: javascript
 
         {
             "value": <value>
@@ -168,7 +168,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
             "<topic>": {
@@ -184,7 +184,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
             "<topic>": {
@@ -203,7 +203,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message indicating unwritable points>"
@@ -215,7 +215,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"
@@ -260,7 +260,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
             "<topic>": {
@@ -275,7 +275,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
             "<topic>": {
@@ -293,7 +293,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message indicating unwritable points>"
@@ -305,7 +305,7 @@ Response:
 
    -  Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
          {
              "error": "<Error Message>"

@@ -1,8 +1,8 @@
 .. _Platforms-Configs-Endpoints:
 
-==========================
+===========================
 Platforms Configs Endpoints
-==========================
+===========================
 
 Platforms Configs endpoints expose functionality associated with platform configuration files.
 These endpoints are for platform-level configurations. Agent configurations are managed by
@@ -31,7 +31,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -44,7 +44,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -55,7 +55,7 @@ Response:
 ---------------------------------------------------------------
 
 POST /platforms/:platform/configs
-================================
+=================================
 
 Save a new platform configuration file.
 
@@ -99,7 +99,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -130,7 +130,7 @@ Response:
         - Content Type: ``application/json``
         - Body:
 
-        .. code-block:: JSON
+        .. code-block:: javascript
 
             {
                 "<setting_name>": <value>,
@@ -151,7 +151,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -203,7 +203,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -240,7 +240,7 @@ Response:
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"

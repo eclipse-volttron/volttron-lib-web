@@ -30,7 +30,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "route_options": {
@@ -43,7 +43,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -54,7 +54,7 @@ Response
 --------------------------------------------------------------------------------------------------
 
 POST /platforms/:platform/agents/:vip_identity/configs/
-=======================================================
+========================================================
 
 Save a new configuration file to the config store.
 
@@ -86,7 +86,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -97,7 +97,7 @@ Response
 -----------------------------------------------------------------------------------------
 
 DELETE /platforms/:platform/agents/:vip_identity/configs/
-=====================================================================
+==========================================================
 
 Remove the configuration store for an agent. This endpoint will return ``409 Conflict`` if
 the store for this agent is not empty. To remove all existing configurations for an agent from the config store
@@ -119,7 +119,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -155,7 +155,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -190,7 +190,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
@@ -219,7 +219,7 @@ Response
     - Content Type: ``application/json``
     - Body:
 
-      .. code-block:: JSON
+      .. code-block:: javascript
 
             {
                 "error": "<Error Message>"
