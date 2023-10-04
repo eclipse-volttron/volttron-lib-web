@@ -4,12 +4,23 @@ and utility pages for administration and certificate management.
 This library cannot be installed as a VOLTTRON agent is.
 Rather, it must be installed as a python package.
 
+![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
 [![Run Pytests](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-tests.yml/badge.svg)](https://github.com/eclipse-volttron/volttron-lib-web/actions/workflows/run-tests.yml)
 [![pypi version](https://img.shields.io/pypi/v/volttron-lib-web.svg)](https://pypi.org/project/volttron-lib-web/)
 
-## Requirements
-* python >=3.8
+# Requires
+
+* python >= 3.10
 * volttron >= 10.0
+* jinja2-cli >= 0.7.0
+* passlib >= 1.7.4
+* PyJWT == 1.7.1
+* treelib >= 1.6.1
+* werkzeug >= 2.1.2
+* ws4py = >= 0.5.1
+* requests >= 2.28.1
+* argon2-cffi >= 21.3.0
 
 ## Installation
 This library can be installed using pip:
@@ -55,7 +66,7 @@ and web_secret_key should not be included. If SSL is not desired,
 provide a web_secret_key instead and remove the lines for the web_ssl_cert
 and web_ssl_key. Any string can be used for the web_secret_key.
 
-Full VOLTTRON documentation is available at [VOLTTRON Readthedocs](https://volttron.readthedocs.io)
+Full VOLTTRON documentation is available at [VOLTTRON Readthedocs](https://eclipse-volttron.readthedocs.io/)
 
 
 ## Use
@@ -66,7 +77,7 @@ configuration shown above). This will create a file called web-users.json in the
 
 Additionally, the web service provides a RESTful API which can be used by other applications. Full documentation for
 the API is available on 
-[Readthedocs](https://volttron.readthedocs.io/en/main/platform-features/web-api/introduction.html).
+[Readthedocs](https://eclipse-volttron.readthedocs.io/en/latest/external-docs/volttron-lib-web/docs/source/index.html).
 
 Note that it is necessary for most API endpoints to have previously created a username and password for authentication
 by visiting the /admin page or by manually copying or creating a web-users.json file. Authentication can then be
@@ -92,7 +103,7 @@ print(platforms.json())
 
 Please see the following for contributing guidelines [contributing](https://github.com/eclipse-volttron/volttron-core/blob/develop/CONTRIBUTING.md).
 
-Please see the following helpful guide about [developing modular VOLTTRON agents](https://github.com/eclipse-volttron/volttron-core/blob/develop/DEVELOPING_ON_MODULAR.md)
+Please see the following helpful guide about [developing modular VOLTTRON agents](https://eclipse-volttron.readthedocs.io/en/latest/developing-volttron/developing-agents/agent-development.html)
 
 # Disclaimer Notice
 
