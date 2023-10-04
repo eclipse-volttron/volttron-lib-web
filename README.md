@@ -77,7 +77,7 @@ configuration shown above). This will create a file called web-users.json in the
 
 Additionally, the web service provides a RESTful API which can be used by other applications. Full documentation for
 the API is available on 
-[Readthedocs](https://eclipse-volttron.readthedocs.io/en/latest/external-docs/volttron-lib-web/docs/source/index.html).
+[Readthedocs](https://eclipse-volttron.readthedocs.io/en/latest/external-docs/volttron-lib-web/index.html).
 
 Note that it is necessary for most API endpoints to have previously created a username and password for authentication
 by visiting the /admin page or by manually copying or creating a web-users.json file. Authentication can then be
