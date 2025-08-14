@@ -52,7 +52,7 @@ from .vui_endpoints import VUIEndpoints
 from .authenticate_endpoint import AuthenticateEndpoints
 from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
-from volttron.client.known_identities import CONTROL, VOLTTRON_CENTRAL, AUTH
+from volttron.client.known_identities import CONTROL, VOLTTRON_CENTRAL, AUTH, PLATFORM_DRIVER
 from volttron.utils.context import ClientContext
 
 from volttron.services.auth import AuthEntry, AuthFile, AuthFileEntryAlreadyExists
@@ -120,6 +120,7 @@ class PlatformWebService(ServiceInterface, Agent):
 
         _log.debug(pformat(server_config.opts.__dict__))
         self.bind_web_address = bind_web_address
+        self.driver_vip_identity = PLATFORM_DRIVER  # TODO: This should be a setting. Integrate config store. How does that change other setting handling?
         self.serverkey = server_config.opts.volttron_publickey
         self.instance_name = None
         self.registeredroutes = []

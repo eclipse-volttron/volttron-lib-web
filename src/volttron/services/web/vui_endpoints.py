@@ -661,7 +661,7 @@ class VUIEndpoints:
                     # Either leaf values are explicitly requested, or all nodes are already points -- Return points:
                     ret_dict = defaultdict(dict)
                     if return_values:
-                        ret_values = self._rpc('platform.actuator', 'get_multiple_points',
+                        ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
                                                [d.topic for d in points], external_platform=platform)
                         for k, v in ret_values[0].items():
                             ret_dict[k]['value'] = v
@@ -673,7 +673,7 @@ class VUIEndpoints:
                         if return_writability:
                             ret_dict[point.topic]['writable'] = self._to_bool(point.data.get('Writable'))
                         if return_config:
-                            ret_dict[point.topic]['config'] = point.data
+                            ret_dict[point.topic]['config'] = point.data.get('config', {})
                     return Response(json.dumps(ret_dict), 200, content_type='application/json')
                 else:
                     # All topics are not complete to points and read_all=False -- return route to next segments:
@@ -697,7 +697,7 @@ class VUIEndpoints:
             try:
                 set_value = data.get('value')
                 topics_values = [(d.topic, set_value) for d in points if d.topic not in unwritables]
-                ret_errors = self._rpc('platform.actuator', 'set_multiple_points',
+                ret_errors = self._rpc(self._agent.driver_vip_identity, 'set_multiple_points',
                                        requester_id=self._agent.core.identity, topics_values=topics_values,
                                        external_platform=platform)
                 ret_dict = defaultdict(dict)
@@ -706,7 +706,7 @@ class VUIEndpoints:
                     ret_dict[k]['set_error'] = ret_errors.get(k)
                     ret_dict[k]['writable'] = True if k not in unwritables else False
                 if confirm_values:
-                    ret_values = self._rpc('platform.actuator', 'get_multiple_points',
+                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
                                            [d.topic for d in points], external_platform=platform)
                     for k in selected_routes.keys():
                         ret_dict[k]['value'] = ret_values[0].get(k)
@@ -729,10 +729,10 @@ class VUIEndpoints:
             try:
                 for t_node in topic_nodes:
                     if t_node.is_device():
-                        self._rpc('platform.actuator', 'revert_device', requester_id=self._agent.core.identity,
+                        self._rpc(self._agent.driver_vip_identity, 'revert_device', requester_id=self._agent.core.identity,
                                   topic=t_node.topic, external_platform=platform)
                     elif t_node.is_point() and t_node.topic not in unwritables:
-                        self._rpc('platform.actuator', 'revert_point', requester_id=self._agent.core.identity,
+                        self._rpc(self._agent.driver_vip_identity, 'revert_point', requester_id=self._agent.core.identity,
                                   topic=t_node.topic, external_platform=platform)
 
                 ret_dict = defaultdict(dict)
@@ -741,7 +741,7 @@ class VUIEndpoints:
                     ret_dict[k]['writable'] = True if k not in unwritables else False
 
                 if confirm_values:
-                    ret_values = self._rpc('platform.actuator', 'get_multiple_points',
+                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
                                            [d.topic for d in points], external_platform=platform)
                     for k in selected_routes.keys():
                         ret_dict[k]['value'] = ret_values[0].get(k)
