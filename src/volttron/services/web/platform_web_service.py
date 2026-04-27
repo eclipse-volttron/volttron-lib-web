@@ -92,7 +92,7 @@ class WebServiceConfig(BaseModel):
     model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True)
     bind_address: AnyHttpUrl = Field(validation_alias='bind_web_address')
     message_bus: str = Field(alias='messagebus')
-    secret_key: SecretStr | None = Field(default=None, alias='web_ssl_key')
+    secret_key: SecretStr | None = Field(default=None, alias='web_secret_key')
     ssl_key: str | None = Field(default=None, alias='web_ssl_key')
     ssl_cert: str | None = Field(default=None, alias='web_ssl_cert')
 

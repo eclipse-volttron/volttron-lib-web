@@ -4,7 +4,6 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
-[tool.poetry]
 name = "volttron-lib-web"
 version = "0.2.0-rc"
 description = "The volttron-lib-web library extends the platform by exposing a web based REST api and allows extension web agents to register with the platform."
@@ -66,4 +65,3 @@ balanced_wrapping = true
 default_section = "THIRDPARTY"
 known_first_party = "volttron"
 include_trailing_comma = true
-
