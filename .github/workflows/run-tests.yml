@@ -89,5 +89,8 @@ jobs:
         run: |
           poetry install --no-interaction
           poetry add --group dev pytest-github-actions-annotate-failures
-          poetry run pytest --cov=src tests/integration_tests/
+          poetry run pytest --cov=src tests/integration_tests/test_admin.py
+          poetry run pytest --cov=src tests/integration_tests/test_discovery.py
+          poetry run pytest --cov=src tests/integration_tests/test_platform_wrapper_with_web.py
+          poetry run pytest --cov=src tests/integration_tests/test_web_authentication_integration.py
           poetry run pytest --cov=src tests/unit_tests/
