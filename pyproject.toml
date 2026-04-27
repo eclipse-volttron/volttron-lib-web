@@ -4,11 +4,12 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
+[tool.poetry]
 name = "volttron-lib-web"
 version = "0.2.0-rc"
 description = "The volttron-lib-web library extends the platform by exposing a web based REST api and allows extension web agents to register with the platform."
 authors = ["VOLTTRON Team <volttron@pnnl.gov>"]
-license = "2022"
+license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/eclipse-volttron/volttron-lib-web"
 homepage = "https://volttron.readthedocs.io"
@@ -19,11 +20,13 @@ packages = [ {include="volttron", from = "src" } ]
 argon2-cffi = "^21.3.0"
 jinja2-cli = ">=0.7.0"
 passlib = "^1.7.4"
+pydantic = ">=2,<3"
 PyJWT = "==1.7.1"
 python = ">=3.10,<4.0"
 requests = "^2.28.1"
 treelib = ">=1.6.1"
-volttron-core = ">=2.0.0rc23"
+volttron-lib-topic-tree = ">=10.1.0"
+volttron-core = ">=2.0.0rc26"
 werkzeug = ">=2.1.2"
 ws4py = ">=0.5.1"
 
@@ -61,5 +64,6 @@ multi_line_output = 3
 force_single_line = false
 balanced_wrapping = true
 default_section = "THIRDPARTY"
-known_first_party = "[[ python_package_import_name ]]"
+known_first_party = "volttron"
 include_trailing_comma = true
+
