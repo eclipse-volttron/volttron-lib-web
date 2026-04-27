@@ -25,24 +25,20 @@
 from __future__ import annotations
 
 import base64
-import logging
-import mimetypes
-import os
-from pathlib import Path
-import re
-from pprint import pformat
-from urllib.parse import urlparse, parse_qs
-import zlib
-from collections import defaultdict
-
 import gevent
 import gevent.pywsgi
 import jwt
-from cryptography.hazmat.primitives import serialization
+import logging
+import mimetypes
+import os
+import re
+import zlib
+
+from collections import defaultdict
 from gevent import Greenlet
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from volttron.types import ServiceInterface
-from volttron.types.server_config import ServerConfig
+from pathlib import Path
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator, SecretStr
 from werkzeug import Response
 
 from ws4py.server.geventserver import WSGIServer
@@ -52,21 +48,18 @@ from .vui_endpoints import VUIEndpoints
 from .authenticate_endpoint import AuthenticateEndpoints
 from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
-from volttron.client.known_identities import CONTROL, VOLTTRON_CENTRAL, AUTH
-from volttron.utils.context import ClientContext
 
-from volttron.services.auth import AuthEntry, AuthFile, AuthFileEntryAlreadyExists
+
 from volttron.utils.certs import Certs, CertWrapper
-from volttron.utils.jsonrpc import (json_result, json_validate_request, INVALID_REQUEST, METHOD_NOT_FOUND,
-                                    UNHANDLED_EXCEPTION, UNAUTHORIZED, UNAVAILABLE_PLATFORM, INVALID_PARAMS,
-                                    UNAVAILABLE_AGENT, INTERNAL_ERROR, RemoteError)
+from volttron.utils.context import ClientContext
+from volttron.utils.jsonrpc import INVALID_REQUEST, UNHANDLED_EXCEPTION, UNAUTHORIZED, UNAVAILABLE_PLATFORM
 
+from volttron.client.known_identities import PLATFORM_WEB
 from volttron.client.vip.agent import Agent, Core, RPC, Unreachable
-from volttron.client.vip.agent.subsystems import query
-from volttron.utils.keystore import encode_key
+from volttron.server.decorators import service
+from volttron.server.server_options import ServerOptions
 from volttron.utils import jsonapi, jsonrpc
-from volttron.utils.network import is_ip_private
-#from volttron.utils.rmq_config_params import RMQConfig
+from volttron.utils import set_agent_identity
 
 # must be after importing of utils which imports grequest.
 import requests
@@ -95,82 +88,72 @@ tplenv = Environment(
     autoescape=select_autoescape(['html', 'xml'])
 )
 
+class WebServiceConfig(BaseModel):
+    model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True)
+    bind_address: AnyHttpUrl = Field(validation_alias='bind_web_address')
+    message_bus: str = Field(alias='messagebus')
+    secret_key: SecretStr | None = Field(default=None, alias='web_secret_key')
+    ssl_key: str | None = Field(default=None, alias='web_ssl_key')
+    ssl_cert: str | None = Field(default=None, alias='web_ssl_cert')
 
-class PlatformWebService(ServiceInterface, Agent):
+    @model_validator(mode='after')
+    def validate_auth_requirements(self) -> WebServiceConfig:
+        if self.bind_address.scheme == 'http' and self.secret_key is None:
+            # TODO: Can we create a secret key for this session? Does that make sense?
+            raise ValueError('Parameter "secret_key" is required when using the web service with an HTTP bind_address.')
+        # TODO: We might want to handle cert loading here so we can validate if it is possible to get them?
+        return self
+
+
+@service
+class PlatformWebService(Agent):
     """The service that is responsible for managing and serving registered pages
 
     Agents can register either a directory of files to serve or an rpc method
     that will be called during the request process.
     """
+    class Meta:
+        identity = PLATFORM_WEB
 
-    def __init__(self, server_config: ServerConfig, bind_web_address,
-                 web_ssl_key=None, web_ssl_cert=None, web_secret_key=None, **kwargs):
+    def __init__(self, opts: ServerOptions, **kwargs):
         """
         Initialize the configuration of the base web service integration within the platform.
 
         """
-        self._web_secret_key = web_secret_key
-        self._ssl_key = web_ssl_key
-        self._ssl_cert = web_ssl_cert
-        super(PlatformWebService, self).__init__(**kwargs)
+        self.config = WebServiceConfig(message_bus=opts.messagebus, **opts.services.get('web', {}))
+        with set_agent_identity(self.Meta.identity):
+            super().__init__(address=opts.service_address, **kwargs)
 
-        # no matter what we need to have a bind-web-address passed to us.
-        if not bind_web_address:
-            raise ValueError("bind-web-address not set in server_config.yml")
-
-        _log.debug(pformat(server_config.opts.__dict__))
-        self.bind_web_address = bind_web_address
-        self.serverkey = server_config.opts.volttron_publickey
-        self.instance_name = None
-        self.registeredroutes = []
-        self.peerroutes = defaultdict(list)
-        self.pathroutes = defaultdict(list)
-        # These will be used if set rather than the
-        # any of the internal agent's certificates
-        # self.web_ssl_key = web_ssl_key
-        # self.web_ssl_cert = web_ssl_cert
-        # self._web_secret_key = web_secret_key
-
-        # Maps from endpoint to peer.
-        self.endpoints = {}
-
-        # self.volttron_central_address = volttron_central_address
-        # self.volttron_central_rmq_address = volttron_central_rmq_address
-
-        # If vc is this instance then make the vc address the same as
-        # the web address.
-        # if not self.volttron_central_address:
-        #     self.volttron_central_address = bind_web_address
+        self.endpoints = {}  # Maps from endpoint to peer.
+        self.peer_routes = defaultdict(list)
+        self.path_routes = defaultdict(list)
+        self.registered_routes = []
 
         # Initialize the mimetypes so that we can guess at the passed mimetype
         if not mimetypes.inited:
             mimetypes.init()
 
         self._certs = Certs()
-        # noinspection PyTypeChecker
-        self._csr_endpoints: CSREndpoints = None
-        # noinspection PyTypeChecker
-        self.appContainer: WebApplicationWrapper = None
-        # noinspection PyTypeChecker
-        self._server_greenlet: Greenlet = None
-        # noinspection PyTypeChecker
-        self._admin_endpoints: AdminEndpoints = None
-        # noinspection PyTypeChecker
-        self._vui_endpoints: VUIEndpoints = None
+
+        self._csr_endpoints: CSREndpoints | None = None
+        self.appContainer: WebApplicationWrapper | None = None
+        self._server_greenlet: Greenlet | None = None
+        self._admin_endpoints: AdminEndpoints | None = None
+        self._vui_endpoints: VUIEndpoints | None = None
 
     @property
     def ssl_cert(self) -> str | None:
         """
         Web server ssl certificate path
         """
-        return self._ssl_cert
+        return self.config.ssl_cert
 
     @property
     def ssl_key(self) -> str | None:
         """
         Web server ssl key path
         """
-        return self._ssl_key
+        return self.config.ssl_key
 
     # pylint: disable=unused-argument
     @Core.receiver('onsetup')
@@ -187,22 +170,22 @@ class PlatformWebService(ServiceInterface, Agent):
     def remove_unconnnected_routes(self):
         peers = self.vip.peerlist().get()
 
-        for p in self.peerroutes:
+        for p in self.peer_routes:
             if p not in peers:
-                del self.peerroutes[p]
+                del self.peer_routes[p]
 
     @RPC.export
     def get_user_claims(self, bearer):
         from ..web import get_user_claim_from_bearer
-        if self.core.messagebus == 'rmq':
+        if self.config.message_bus == 'rmq':
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=self._certs.get_cert_public_key(
                                                     ClientContext.get_fq_identity(self.core.identity)))
         elif self.ssl_cert is not None:
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=CertWrapper.get_cert_public_key(self.ssl_cert))
-        elif self._web_secret_key is not None:
-            claims = get_user_claim_from_bearer(bearer, web_secret_key=self._web_secret_key)
+        elif self.config.secret_key is not None:
+            claims = get_user_claim_from_bearer(bearer, web_secret_key=self.config.secret_key.get_secret_value())
 
         else:
             raise ValueError("Configuration error secret key or web ssl cert must be not None.")
@@ -221,11 +204,7 @@ class PlatformWebService(ServiceInterface, Agent):
 
     @RPC.export
     def get_bind_web_address(self):
-        return self.bind_web_address
-
-    @RPC.export
-    def get_serverkey(self):
-        return self.serverkey
+        return self.config.bind_address
 
     @RPC.export
     def get_volttron_central_address(self):
@@ -274,8 +253,8 @@ class PlatformWebService(ServiceInterface, Agent):
         # TODO: inspect peer for function
 
         compiled = re.compile(regex)
-        self.peerroutes[identity].append(compiled)
-        self.registeredroutes.insert(0, (compiled, 'peer_route', (identity, fn)))
+        self.peer_routes[identity].append(compiled)
+        self.registered_routes.insert(0, (compiled, 'peer_route', (identity, fn)))
 
     @RPC.export
     def unregister_all_agent_routes(self):
@@ -283,14 +262,14 @@ class PlatformWebService(ServiceInterface, Agent):
         identity = self.vip.rpc.context.vip_message.peer
 
         _log.info('Unregistering agent routes for: {}'.format(identity))
-        for regex in self.peerroutes[identity]:
-            out = [cp for cp in self.registeredroutes if cp[0] != regex]
-            self.registeredroutes = out
-        del self.peerroutes[identity]
-        for regex in self.pathroutes[identity]:
-            out = [cp for cp in self.registeredroutes if cp[0] != regex]
-            self.registeredroutes = out
-        del self.pathroutes[identity]
+        for regex in self.peer_routes[identity]:
+            out = [cp for cp in self.registered_routes if cp[0] != regex]
+            self.registered_routes = out
+        del self.peer_routes[identity]
+        for regex in self.path_routes[identity]:
+            out = [cp for cp in self.registered_routes if cp[0] != regex]
+            self.registered_routes = out
+        del self.path_routes[identity]
 
         endpoints = self.endpoints.copy()
         endpoints = {i:endpoints[i] for i in endpoints if endpoints[i][0] != identity}
@@ -304,14 +283,14 @@ class PlatformWebService(ServiceInterface, Agent):
         _log.info(f'Registering web path route from {identity} regex: {regex} dir: {root_dir}')
 
         compiled = re.compile(regex)
-        self.pathroutes[identity].append(compiled)
+        self.path_routes[identity].append(compiled)
         assert Path(root_dir).exists()
         # Make sure we resolve the root directory so its easier to check
         # later on.
         root_dir = str(Path(root_dir).resolve(root_dir))
         # in order for this agent to pass against the default route we want this
         # to be before the last route which will resolve to .*
-        self.registeredroutes.insert(len(self.registeredroutes) - 1, (compiled, 'path', root_dir))
+        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', root_dir))
 
     @RPC.export
     def register_websocket(self, endpoint):
@@ -346,75 +325,80 @@ class PlatformWebService(ServiceInterface, Agent):
         start_response('302 Found', [('Location', '/index.html')])
         return [b'1']
 
-    def _allow(self, environ, start_response, data=None):
-        _log.info('Allowing new vc instance to connect to server.')
-        jsondata = jsonapi.loads(data)
-        json_validate_request(jsondata)
+    # TODO: Commented, as this will fail at the RPC call. Is the discovery/allow endpoint still needed in modular?
+    # def _allow(self, environ, start_response, data=None):
+    #     _log.info('Allowing new vc instance to connect to server.')
+    #     jsondata = jsonapi.loads(data)
+    #     json_validate_request(jsondata)
+    #
+    #     assert jsondata.get('method') == 'allowvc'
+    #     assert jsondata.get('params')
+    #
+    #     params = jsondata.get('params')
+    #     if isinstance(params, list):
+    #         vcpublickey = params[0]
+    #     else:
+    #         vcpublickey = params.get('vcpublickey')
+    #
+    #     assert vcpublickey
+    #     assert len(vcpublickey) == 43
+    #
+    #     authentry = {"credentials": vcpublickey, "identity": VOLTTRON_CENTRAL}
+    #     try:
+    #         # TODO: auth_file.add no longer exists. there is a create_credentials available.
+    #         # TODO: Is this whole section VOLTTRON Central specific, and if so, should it be removed?
+    #         self.vip.rpc.call(AUTH, "auth_file.add", authentry).get()
+    #     except AuthFileEntryAlreadyExists:
+    #         pass
+    #
+    #     start_response('200 OK',
+    #                    [('Content-Type', 'application/json')])
+    #     return [jsonapi.dumpb(
+    #         json_result(jsondata['id'], "Added")
+    #     )]
 
-        assert jsondata.get('method') == 'allowvc'
-        assert jsondata.get('params')
-
-        params = jsondata.get('params')
-        if isinstance(params, list):
-            vcpublickey = params[0]
-        else:
-            vcpublickey = params.get('vcpublickey')
-
-        assert vcpublickey
-        assert len(vcpublickey) == 43
-
-        authentry = {"credentials": vcpublickey, "identity": VOLTTRON_CENTRAL}
-        try:
-            self.vip.rpc.call(AUTH, "auth_file.add", authentry).get()
-        except AuthFileEntryAlreadyExists:
-            pass
-
-        start_response('200 OK',
-                       [('Content-Type', 'application/json')])
-        return [jsonapi.dumpb(
-            json_result(jsondata['id'], "Added")
-        )]
-
-    def _get_discovery(self, environ, start_response, data=None):
-        q = query.Query(self.core)
-
-        self.instance_name = q.query('instance-name').get(timeout=60)
-        addreses = q.query('addresses').get(timeout=60)
-        external_vip = None
-        for x in addreses:
-            try:
-                if not is_ip_private(x):
-                    external_vip = x
-                    break
-            except IndexError:
-                pass
-
-        return_dict = {}
-
-        # Only send vip and serverkey if the platform has specified
-        # a tcp address in the <VOLTTRON_HOME>/config or --vip-address command line argument.
-        if external_vip and self.serverkey:
-            return_dict['serverkey'] = encode_key(self.serverkey)
-            return_dict['vip-address'] = external_vip
-        elif not external_vip:
-            _log.warning("There was no external vip-address specified in config file or command line.")
-
-        if self.instance_name:
-            return_dict['instance-name'] = self.instance_name
-
-        # if self.core.messagebus == 'rmq':
-        #     config = RMQConfig()
-        #     rmq_address = None
-        #     if config.is_ssl:
-        #         rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
-        #                                                              vhost=config.virtual_host)
-        #     else:
-        #         rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
-        #                                                             vhost=config.virtual_host)
-        #     return_dict['rmq-address'] = rmq_address
-        #     return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
-        #         serialization.Encoding.PEM).decode("utf-8")
-        return Response(jsonapi.dumps(return_dict), content_type="application/json")
+    # TODO: Commented, as this will fail at the encode_key(). Is the discovery endpoint still needed in modular?
+    # def _get_discovery(self, environ, start_response, data=None):
+    #     q = query.Query(self.core)
+    #
+    #     self.instance_name = q.query('instance-name').get(timeout=60)
+    #     addreses = q.query('addresses').get(timeout=60)
+    #     external_vip = None
+    #     for x in addreses:
+    #         try:
+    #             if not is_ip_private(x):
+    #                 external_vip = x
+    #                 break
+    #         except IndexError:
+    #             pass
+    #
+    #     return_dict = {}
+    #
+    #     # Only send vip and serverkey if the platform has specified
+    #     # a tcp address in the <VOLTTRON_HOME>/config or --vip-address command line argument.
+    #     if external_vip and self.serverkey:
+    #         # TODO: encode_key no longer exists. What did that do, and how to replace it?
+    #         return_dict['serverkey'] = encode_key(self.serverkey)
+    #         return_dict['vip-address'] = external_vip
+    #     elif not external_vip:
+    #         _log.warning("There was no external vip-address specified in config file or command line.")
+    #
+    #     if self.instance_name:
+    #         return_dict['instance-name'] = self.instance_name
+    #
+    #     # if self.config.message_bus == 'rmq':
+    #     #     config = RMQConfig()
+    #     #     rmq_address = None
+    #     #     if config.is_ssl:
+    #     #         rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
+    #     #                                                              vhost=config.virtual_host)
+    #     #     else:
+    #     #         rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
+    #     #                                                             vhost=config.virtual_host)
+    #     #     return_dict['rmq-address'] = rmq_address
+    #     #     return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
+    #     #         serialization.Encoding.PEM).decode("utf-8")
+    #     return Response(jsonapi.dumps(return_dict), content_type="application/json")
 
     def app_routing(self, env, start_response):
         """
@@ -449,7 +433,7 @@ class PlatformWebService(ServiceInterface, Agent):
             data = jsonapi.loads(data)
 
         # Only if https available and rmq for the admin area.
-        if env['wsgi.url_scheme'] == 'https' and self.core.messagebus == 'rmq':
+        if env['wsgi.url_scheme'] == 'https' and self.config.message_bus == 'rmq':
             # Load the publickey that was used to sign the login message through the env
             # parameter so agents can use it to verify the Bearer has specific
             # jwt claims
@@ -478,7 +462,7 @@ class PlatformWebService(ServiceInterface, Agent):
         if 'ws4py.socket' in env:
             return env['ws4py.socket'](env, start_response)
 
-        for k, t, v in self.registeredroutes:
+        for k, t, v in self.registered_routes:
             if k.match(path_info):
                 _log.debug("MATCHED:\npattern: {}, path_info: {}\n v: {}"
                            .format(k.pattern, path_info, v))
@@ -749,16 +733,12 @@ class PlatformWebService(ServiceInterface, Agent):
 
     @Core.receiver('onstart')
     def startupagent(self, sender, **kwargs):
-
-        from urllib.parse import urlparse
-        parsed = urlparse(self.bind_web_address)
-
-        ssl_key = self._ssl_key
-        ssl_cert = self._ssl_cert
+        ssl_key = self.config.ssl_key
+        ssl_cert = self.config.ssl_cert
         rpc_caller = self.vip.rpc
-        if parsed.scheme == 'https':
-            # Admin interface is only availble to rmq at present.
-            if self.core.messagebus == 'rmq':
+        if self.config.bind_address.scheme == 'https':
+            # Admin interface is only available to rmq at present.
+            if self.config.message_bus == 'rmq':
                 self._admin_endpoints = AdminEndpoints(rmq_mgmt=self.core.rmq_mgmt,
                                                        ssl_public_key=self._certs.get_cert_public_key(
                                                            ClientContext.get_fq_identity(self.core.identity)),
@@ -779,61 +759,56 @@ class PlatformWebService(ServiceInterface, Agent):
                                                        rpc_caller=rpc_caller)
         else:
             self._admin_endpoints = AdminEndpoints(rpc_caller=rpc_caller)
-
-        hostname = parsed.hostname
-        port = parsed.port
-
-        _log.info('Starting web server binding to {}://{}:{}.'.format(parsed.scheme,
-                                                                      hostname, port))
+        _log.info(f'Starting web server binding to {self.config.bind_address}.')
         # Handle the platform.web routes here.
-        self.registeredroutes.append((re.compile('^/discovery/$'), 'callable', self._get_discovery))
-        self.registeredroutes.append((re.compile('^/discovery/allow$'), 'callable', self._allow))
-        self.registeredroutes.append((re.compile(r'/gs'), 'callable', self.jsonrpc))
+        #self.registeredroutes.append((re.compile('^/discovery/$'), 'callable', self._get_discovery))
+        #self.registeredroutes.append((re.compile('^/discovery/allow$'), 'callable', self._allow))
+        self.registered_routes.append((re.compile(r'/gs'), 'callable', self.jsonrpc))
         # these routes are only available for rmq based message bus
         # at present.
-        if self.core.messagebus == 'rmq':
+        if self.config.message_bus == 'rmq':
             # We need reference to the object so we can change the behavior of
             # whether or not to have auto certs be created or not.
             self._csr_endpoints = CSREndpoints(self.core)
             for rt in self._csr_endpoints.get_routes():
-                self.registeredroutes.append(rt)
+                self.registered_routes.append(rt)
 
         # Register the admin endpoints regardless of whether there is an ssl context
         # or not.
         for rt in self._admin_endpoints.get_routes():
-            self.registeredroutes.append(rt)
+            self.registered_routes.append(rt)
 
         # Register VUI endpoints:
         self._vui_endpoints = VUIEndpoints(self)
-        self.registeredroutes.extend(self._vui_endpoints.get_routes())
+        self.registered_routes.extend(self._vui_endpoints.get_routes())
 
         # Allow authentication endpoint from any https connection
-        if parsed.scheme == 'https':
-            if self.core.messagebus == 'rmq':
+        if self.config.bind_address.scheme == 'https':
+            if self.config.message_bus == 'rmq':
                 ssl_private_key = self._certs.get_pk_bytes(ClientContext.get_fq_identity(self.core.identity))
                 ssl_public_key = self._certs.get_cert_public_key(ClientContext.get_fq_identity(self.core.identity))
             else:
                 ssl_private_key = CertWrapper.get_private_key(ssl_key)
-                ssl_public_key = CertWrapper.get_cert_public_key(self.web_ssl_cert)
+                ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
             for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
-                self.registeredroutes.append(rt)
+                self.registered_routes.append(rt)
         else:
             # We don't have a private ssl key if we aren't using ssl.
-            for rt in AuthenticateEndpoints(web_secret_key=self._web_secret_key).get_routes():
-                self.registeredroutes.append(rt)
+            for rt in AuthenticateEndpoints(web_secret_key=self.config.secret_key.get_secret_value()).get_routes():
+                self.registered_routes.append(rt)
 
         static_dir = os.path.join(os.path.dirname(__file__), "static")
-        self.registeredroutes.append((re.compile('^/.*$'), 'path', static_dir))
+        self.registered_routes.append((re.compile('^/.*$'), 'path', static_dir))
 
-        port = int(port)
+        port = int(self.config.bind_address.port)
 
-        self.appContainer = WebApplicationWrapper(self, hostname, port)
+        self.appContainer = WebApplicationWrapper(self, self.config.bind_address.host, port)
         if ssl_key and ssl_cert:
-            svr = WSGIServer((hostname, port), self.appContainer,
+            svr = WSGIServer(((self.config.bind_address.host), port), self.appContainer,
                              certfile=ssl_cert,
                              keyfile=ssl_key)
         else:
-            svr = WSGIServer((hostname, port), self.appContainer)
+            svr = WSGIServer(((self.config.bind_address.host), port), self.appContainer)
         self._server_greenlet = gevent.spawn(svr.serve_forever)
 
     def _authenticate_route(self, env, start_response, data):
