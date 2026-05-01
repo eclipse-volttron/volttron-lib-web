@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "volttron-lib-web"
-version = "0.2.0-rc"
+version = "2.0.0rc1"
 description = "The volttron-lib-web library extends the platform by exposing a web based REST api and allows extension web agents to register with the platform."
 authors = ["VOLTTRON Team <volttron@pnnl.gov>"]
 license = "Apache-2.0"
@@ -17,51 +17,20 @@ packages = [ {include="volttron", from = "src" } ]
 
 [tool.poetry.dependencies]
 argon2-cffi = "^21.3.0"
-jinja2-cli = ">=0.7.0"
+jinja2 = ">=2.10.1"
 passlib = "^1.7.4"
 pydantic = ">=2,<3"
 PyJWT = "==1.7.1"
 python = ">=3.10,<4.0"
 requests = "^2.28.1"
-treelib = ">=1.6.1"
 volttron-lib-tree = ">=2.0.0rc1"
-volttron-core = ">=2.0.0rc26"
 werkzeug = ">=2.1.2"
 ws4py = ">=0.5.1"
 
 [tool.poetry.dev-dependencies]
-# formatting, quality, tests
-autoflake = ">=1.4"
-deepdiff = ">=5.8.1"
-isort = ">=5.7.0"
-mock = "^4.0.3"
-mypy = ">=0.812"
-pytest = ">=6.2.2"
-pytest-cov = "^3.0.0"
-pytest-randomly = ">=3.5.0"
-pytest-sugar = ">=0.9.4"
-pytest-xdist = ">=2.2.0"
-types-toml = ">=0.10.1"
-volttron-testing = '>=0.4.0rc0'
-
-# tasks
-duty = ">=0.6.0"
-git-changelog = ">=0.5.0"
-httpx = ">=0.16.1"
-toml = ">=0.10.2"
-
-pre-commit = "^2.17.0"
+volttron-testing = '>=0.5.1rc4'
 
 [tool.poetry.group.documentation.dependencies]
 Sphinx = "^4.5.0"
 sphinx-rtd-theme = "^1.0.0"
 
-[tool.isort]
-line_length = 120
-not_skip = "__init__.py"
-multi_line_output = 3
-force_single_line = false
-balanced_wrapping = true
-default_section = "THIRDPARTY"
-known_first_party = "volttron"
-include_trailing_comma = true
