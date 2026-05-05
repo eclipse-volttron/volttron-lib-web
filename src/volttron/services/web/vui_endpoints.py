@@ -255,7 +255,8 @@ class VUIEndpoints:
         platform = re.match('^/vui/platforms/([^/]+)/agents/?$', path_info).groups()[0]
         if request_method == 'GET':
             include_hidden = self._to_bool(query_params.get('include-hidden', False))
-            agent_state = query_params.get('agent-state', 'running')
+            agent_state = query_params.get('agent-state', ['running'])
+            agent_state = agent_state[0] if isinstance(agent_state, list) else agent_state
             if agent_state not in ['running', 'installed']:
                 error = {'error': f'Unknown agent-state: {agent_state} -- must be "running", "installed",'
                                   f' or "packaged". Default is "running".'}
