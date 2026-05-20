@@ -30,14 +30,14 @@ from os.path import normpath, join
 from gevent.timeout import Timeout
 from collections import defaultdict
 from typing import List, Union
-
+from urllib.parse import parse_qs
 from werkzeug import Response
-from werkzeug.urls import url_decode
+
 
 from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
 from volttron.client.vip.agent.subsystems.query import Query
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
-from .topic_tree import DeviceTree, TopicTree
+from volttron.lib.tree import DeviceTree, TopicTree
 from .vui_pubsub import VUIPubsubManager
 
 
@@ -212,7 +212,7 @@ class VUIEndpoints:
         ]
 
     @endpoint
-    def handle_vui_root(self, env: dict, data: dict) -> Response:
+    def handle_vui_root(self, env: dict, data: dict) -> Response | None:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         if request_method == 'GET':
@@ -220,7 +220,7 @@ class VUIEndpoints:
             return Response(response, 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms(self, env: dict, data: dict) -> Response:
+    def handle_platforms(self, env: dict, data: dict) -> Response | None:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         if request_method == 'GET':
@@ -229,7 +229,7 @@ class VUIEndpoints:
             return Response(response, 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms_platform(self, env: dict, data: dict) -> Response:
+    def handle_platforms_platform(self, env: dict, data: dict) -> Response | None:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         if request_method == 'GET':
@@ -242,7 +242,7 @@ class VUIEndpoints:
                                 400, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/
         :param env:
@@ -251,11 +251,12 @@ class VUIEndpoints:
         """
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = url_decode(env['QUERY_STRING'])
+        query_params = parse_qs(env['QUERY_STRING'])
         platform = re.match('^/vui/platforms/([^/]+)/agents/?$', path_info).groups()[0]
         if request_method == 'GET':
             include_hidden = self._to_bool(query_params.get('include-hidden', False))
-            agent_state = query_params.get('agent-state', 'running')
+            agent_state = query_params.get('agent-state', ['running'])
+            agent_state = agent_state[0] if isinstance(agent_state, list) else agent_state
             if agent_state not in ['running', 'installed']:
                 error = {'error': f'Unknown agent-state: {agent_state} -- must be "running", "installed",'
                                   f' or "packaged". Default is "running".'}
@@ -269,7 +270,7 @@ class VUIEndpoints:
                                 content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_running(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_running(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/running
         :param env:
@@ -278,7 +279,7 @@ class VUIEndpoints:
         """
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = url_decode(env['QUERY_STRING'])
+        query_params = parse_qs(env['QUERY_STRING'])
         restart = self._to_bool(query_params.get('restart', 'false'))
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/running/?$', path_info).groups()
         uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
@@ -309,7 +310,7 @@ class VUIEndpoints:
             return Response(status=204)
 
     @endpoint
-    def handle_platforms_agents_agent(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_agent(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/:vip_identity/
         :param env:
@@ -331,7 +332,7 @@ class VUIEndpoints:
             return Response(json.dumps(active_routes), 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_configs(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_configs(self, env: dict, data: dict) -> Response | None:
         """
                 Endpoints for /vui/platforms/:platform/agents/:vip_identity/configs/:file_name
                 :param env:
@@ -346,7 +347,7 @@ class VUIEndpoints:
         no_config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/?$', path_info)
         if no_config_name:
             platform, vip_identity, config_name = tuple(no_config_name.groups()) + ('',)
-            query_params = url_decode(env['QUERY_STRING'])
+            query_params = parse_qs(env['QUERY_STRING'])
             config_name = query_params.get('config-name')
         else:
             platform, vip_identity, config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/(.*)/?$',
@@ -411,7 +412,7 @@ class VUIEndpoints:
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_enabled(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_enabled(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/:vip_identity/enabled/
         :param env:
@@ -420,7 +421,7 @@ class VUIEndpoints:
         """
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = url_decode(env['QUERY_STRING'])
+        query_params = parse_qs(env['QUERY_STRING'])
         priority = query_params.get('priority', '50')
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/enabled/?$', path_info).groups()
 
@@ -461,7 +462,7 @@ class VUIEndpoints:
                                 400, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_rpc(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_rpc(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/:vip_identity/rpc/
         :param env:
@@ -477,7 +478,7 @@ class VUIEndpoints:
             return Response(json.dumps(response), 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_rpc_method(self, env: dict, data: Union[dict, List]) -> Response:
+    def handle_platforms_agents_rpc_method(self, env: dict, data: Union[dict, List]) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/:vip_identity/rpc/
         :param env:
@@ -514,7 +515,7 @@ class VUIEndpoints:
             return Response(json.dumps(result), 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_status(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_status(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/:vip_identity/status/
         :param env:
@@ -539,7 +540,7 @@ class VUIEndpoints:
                                 400, content_type='application/json')
 
     @endpoint
-    def handle_platforms_agents_tag(self, env: dict, data: dict) -> Response:
+    def handle_platforms_agents_tag(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/agents/:vip_identity/tag/
         :param env:
@@ -579,7 +580,7 @@ class VUIEndpoints:
             return Response(status=204)
 
     @endpoint
-    def handle_platforms_devices(self, env: dict, data: dict) -> Response:
+    def handle_platforms_devices(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/devices/ and /vui/platforms/:platform/devices/:topic/
         :param env:
@@ -613,7 +614,7 @@ class VUIEndpoints:
 
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = url_decode(env['QUERY_STRING'])
+        query_params = parse_qs(env['QUERY_STRING'])
 
         tag = query_params.get('tag')
         tag = tag if tag and tag.lower() != 'null' and tag.lower() != 'none' else None
@@ -661,7 +662,7 @@ class VUIEndpoints:
                     # Either leaf values are explicitly requested, or all nodes are already points -- Return points:
                     ret_dict = defaultdict(dict)
                     if return_values:
-                        ret_values = self._rpc('platform.actuator', 'get_multiple_points',
+                        ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
                                                [d.topic for d in points], external_platform=platform)
                         for k, v in ret_values[0].items():
                             ret_dict[k]['value'] = v
@@ -673,7 +674,7 @@ class VUIEndpoints:
                         if return_writability:
                             ret_dict[point.topic]['writable'] = self._to_bool(point.data.get('Writable'))
                         if return_config:
-                            ret_dict[point.topic]['config'] = point.data
+                            ret_dict[point.topic]['config'] = point.data.get('config', {})
                     return Response(json.dumps(ret_dict), 200, content_type='application/json')
                 else:
                     # All topics are not complete to points and read_all=False -- return route to next segments:
@@ -697,7 +698,7 @@ class VUIEndpoints:
             try:
                 set_value = data.get('value')
                 topics_values = [(d.topic, set_value) for d in points if d.topic not in unwritables]
-                ret_errors = self._rpc('platform.actuator', 'set_multiple_points',
+                ret_errors = self._rpc(self._agent.driver_vip_identity, 'set_multiple_points',
                                        requester_id=self._agent.core.identity, topics_values=topics_values,
                                        external_platform=platform)
                 ret_dict = defaultdict(dict)
@@ -706,7 +707,7 @@ class VUIEndpoints:
                     ret_dict[k]['set_error'] = ret_errors.get(k)
                     ret_dict[k]['writable'] = True if k not in unwritables else False
                 if confirm_values:
-                    ret_values = self._rpc('platform.actuator', 'get_multiple_points',
+                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
                                            [d.topic for d in points], external_platform=platform)
                     for k in selected_routes.keys():
                         ret_dict[k]['value'] = ret_values[0].get(k)
@@ -729,10 +730,10 @@ class VUIEndpoints:
             try:
                 for t_node in topic_nodes:
                     if t_node.is_device():
-                        self._rpc('platform.actuator', 'revert_device', requester_id=self._agent.core.identity,
+                        self._rpc(self._agent.driver_vip_identity, 'revert_device', requester_id=self._agent.core.identity,
                                   topic=t_node.topic, external_platform=platform)
                     elif t_node.is_point() and t_node.topic not in unwritables:
-                        self._rpc('platform.actuator', 'revert_point', requester_id=self._agent.core.identity,
+                        self._rpc(self._agent.driver_vip_identity, 'revert_point', requester_id=self._agent.core.identity,
                                   topic=t_node.topic, external_platform=platform)
 
                 ret_dict = defaultdict(dict)
@@ -741,7 +742,7 @@ class VUIEndpoints:
                     ret_dict[k]['writable'] = True if k not in unwritables else False
 
                 if confirm_values:
-                    ret_values = self._rpc('platform.actuator', 'get_multiple_points',
+                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
                                            [d.topic for d in points], external_platform=platform)
                     for k in selected_routes.keys():
                         ret_dict[k]['value'] = ret_values[0].get(k)
@@ -761,7 +762,7 @@ class VUIEndpoints:
         from volttron.services.web import get_bearer  # TODO: Is this necessary, with bearer imported in decorator?
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = url_decode(env['QUERY_STRING'])
+        query_params = parse_qs(env['QUERY_STRING'])
         _log.debug('VUI.handle_platforms_pubsub -- env is: ')
         _log.debug({k: str(v) for k, v in env.items()})
         _log.debug(f'HTTP_AUTHORIZATION is: {env["HTTP_AUTHORIZATION"]}')
@@ -800,7 +801,7 @@ class VUIEndpoints:
         #     return Response(status=204)
 
     @endpoint
-    def handle_platforms_historians(self, env: dict, data: dict) -> Response:
+    def handle_platforms_historians(self, env: dict, data: dict) -> Response | None:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         platform = re.match('^/vui/platforms/([^/]+)/historians/?$', path_info).groups()[0]
@@ -811,7 +812,7 @@ class VUIEndpoints:
             return Response(response, 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms_historians_historian(self, env: dict, data: dict) -> Response:
+    def handle_platforms_historians_historian(self, env: dict, data: dict) -> Response | None:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/historians/([^/]+)/?$', path_info).groups()
@@ -822,7 +823,7 @@ class VUIEndpoints:
             return Response(json.dumps(links), 200, content_type='application/json')
 
     @endpoint
-    def handle_platforms_historians_historian_topics(self, env: dict, data: dict) -> Response:
+    def handle_platforms_historians_historian_topics(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/historians/topics and /vui/platforms/:platform/historians/topics/:topic/
         :param env:
@@ -832,7 +833,7 @@ class VUIEndpoints:
 
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = url_decode(env['QUERY_STRING'])
+        query_params = parse_qs(env['QUERY_STRING'])
 
         # Query parameters used directly in this method.
         tag = query_params.get('tag')
@@ -924,7 +925,7 @@ class VUIEndpoints:
                             status='501 Not Implemented', content_type='text/plain')
 
     @endpoint
-    def handle_platforms_status(self, env: dict, data: dict) -> Response:
+    def handle_platforms_status(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/status/
         :param env:
