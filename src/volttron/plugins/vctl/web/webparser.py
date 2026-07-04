@@ -32,20 +32,6 @@ from volttron.types.factories import ControlParser
 from volttron.client.decorators import vctl_subparser
 
 
-# Suppress harmless gevent cleanup error on exit
-# This occurs because control.py patches gevent globally but this module doesn't use RPC
-# Set up exception hook at module import time
-_original_excepthook = sys.excepthook
-
-def _custom_excepthook(exc_type, exc_value, traceback):
-    """Custom exception hook to suppress gevent cleanup errors."""
-    # Ignore gevent cleanup errors
-    if exc_type is RuntimeError and "greenlet is being finalized" in str(exc_value):
-        return
-    _original_excepthook(exc_type, exc_value, traceback)
-
-sys.excepthook = _custom_excepthook
-
 _stdout = sys.stdout
 _stderr = sys.stderr
 
@@ -77,7 +63,7 @@ def create_admin_user(opts):
             overwrite=opts.overwrite
         )
 
-        _stdout.write(f"Successfully created admin user '{username}'\n")
+        _stdout.write(f"Successfully created admin user..... '{username}'\n")
 
     except ValueError as e:
         _stderr.write(f"ERROR: {str(e)}\n")

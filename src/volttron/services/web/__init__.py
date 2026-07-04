@@ -35,7 +35,9 @@ except ImportError:
 from . discovery import DiscoveryInfo, DiscoveryError
 
 # Used outside so we make it available through this file.
-from . platform_web_service import PlatformWebService
+# removing below import from init as this cause jinja2 to be imported and causes gevent error when running
+# vctl web command even though the vct web command itself complete successfully
+# from . platform_web_service import PlatformWebService
 
 _log = logging.getLogger(__name__)
 
