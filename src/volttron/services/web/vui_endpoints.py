@@ -842,11 +842,13 @@ class VUIEndpoints:
         regex = regex if regex and regex.lower() != 'null' and regex.lower() != 'none' else None
 
         # Query parameters passed directly to RPC.
-        start = query_params.get('start')
-        end = query_params.get('end')
-        skip = int(query_params.get('skip') if query_params.get('skip') else 0)
-        count = query_params.get('count')
-        order = query_params.get('order') if query_params.get('order') else 'FIRST_TO_LAST'
+        # parse_qs returns lists for every key; extract the first element of each.
+        start = query_params.get('start', [None])[0]
+        end = query_params.get('end', [None])[0]
+        skip = int(query_params.get('skip', ['0'])[0])
+        _count = query_params.get('count', [None])[0]
+        count = int(_count) if _count is not None else None
+        order = query_params.get('order', ['FIRST_TO_LAST'])[0]
         # TODO: agg_type & agg_period not implemented, need to check response format of Aggregate Historians
         agg_type = None
         agg_period = None
@@ -896,11 +898,11 @@ class VUIEndpoints:
                                                [p.topic for p in points], start, end, agg_type, agg_period, skip, count,
                                                order, external_platform=platform)
                         # to match single and multiple topics query results into the same structure
-                        ret_values['values'] = ret_values['values'] if isinstance(ret_values['values'], dict) else {
-                            points[0].topic: ret_values['values']}
-                        for k, v in ret_values['values'].items():
+                        values = ret_values.get('values') or {}
+                        values = values if isinstance(values, dict) else {points[0].topic: values}
+                        for k, v in values.items():
                             ret_dict[k]['value'] = v
-                            if ret_values['metadata']:
+                            if ret_values.get('metadata'):
                                 ret_dict[k]['metadata'] = ret_values['metadata']
                     for point in points:
                         if return_routes:
