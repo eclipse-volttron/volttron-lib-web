@@ -31,6 +31,25 @@ from gevent.timeout import Timeout
 from collections import defaultdict
 from typing import List, Union
 from urllib.parse import parse_qs
+
+
+def _parse_query_params(query_string: str, allow_multiple: tuple = ()) -> dict:
+    """Wrap parse_qs, unwrapping single-value lists to plain scalars.
+
+    parse_qs always returns dict[str, list[str]].  For keys not in
+    allow_multiple, the first value is extracted so callers receive a plain
+    string (or whatever default they pass to .get()).  Keys listed in
+    allow_multiple keep their list when there are genuinely multiple values for
+    that key; otherwise they are also unwrapped.
+    """
+    raw = parse_qs(query_string)
+    result = {}
+    for key, values in raw.items():
+        if key in allow_multiple and len(values) > 1:
+            result[key] = values
+        else:
+            result[key] = values[0]
+    return result
 from werkzeug import Response
 
 
@@ -251,12 +270,11 @@ class VUIEndpoints:
         """
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = parse_qs(env['QUERY_STRING'])
+        query_params = _parse_query_params(env['QUERY_STRING'])
         platform = re.match('^/vui/platforms/([^/]+)/agents/?$', path_info).groups()[0]
         if request_method == 'GET':
             include_hidden = self._to_bool(query_params.get('include-hidden', False))
-            agent_state = query_params.get('agent-state', ['running'])
-            agent_state = agent_state[0] if isinstance(agent_state, list) else agent_state
+            agent_state = query_params.get('agent-state', 'running')
             if agent_state not in ['running', 'installed']:
                 error = {'error': f'Unknown agent-state: {agent_state} -- must be "running", "installed",'
                                   f' or "packaged". Default is "running".'}
@@ -279,7 +297,7 @@ class VUIEndpoints:
         """
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = parse_qs(env['QUERY_STRING'])
+        query_params = _parse_query_params(env['QUERY_STRING'])
         restart = self._to_bool(query_params.get('restart', 'false'))
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/running/?$', path_info).groups()
         uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
@@ -347,7 +365,7 @@ class VUIEndpoints:
         no_config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/?$', path_info)
         if no_config_name:
             platform, vip_identity, config_name = tuple(no_config_name.groups()) + ('',)
-            query_params = parse_qs(env['QUERY_STRING'])
+            query_params = _parse_query_params(env['QUERY_STRING'])
             config_name = query_params.get('config-name')
         else:
             platform, vip_identity, config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/(.*)/?$',
@@ -421,7 +439,7 @@ class VUIEndpoints:
         """
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = parse_qs(env['QUERY_STRING'])
+        query_params = _parse_query_params(env['QUERY_STRING'])
         priority = query_params.get('priority', '50')
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/enabled/?$', path_info).groups()
 
@@ -614,7 +632,7 @@ class VUIEndpoints:
 
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = parse_qs(env['QUERY_STRING'])
+        query_params = _parse_query_params(env['QUERY_STRING'])
 
         tag = query_params.get('tag')
         tag = tag if tag and tag.lower() != 'null' and tag.lower() != 'none' else None
@@ -762,7 +780,7 @@ class VUIEndpoints:
         from volttron.services.web import get_bearer  # TODO: Is this necessary, with bearer imported in decorator?
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = parse_qs(env['QUERY_STRING'])
+        query_params = _parse_query_params(env['QUERY_STRING'])
         _log.debug('VUI.handle_platforms_pubsub -- env is: ')
         _log.debug({k: str(v) for k, v in env.items()})
         _log.debug(f'HTTP_AUTHORIZATION is: {env["HTTP_AUTHORIZATION"]}')
@@ -833,7 +851,7 @@ class VUIEndpoints:
 
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = parse_qs(env['QUERY_STRING'])
+        query_params = _parse_query_params(env['QUERY_STRING'])
 
         # Query parameters used directly in this method.
         tag = query_params.get('tag')
@@ -842,13 +860,12 @@ class VUIEndpoints:
         regex = regex if regex and regex.lower() != 'null' and regex.lower() != 'none' else None
 
         # Query parameters passed directly to RPC.
-        # parse_qs returns lists for every key; extract the first element of each.
-        start = query_params.get('start', [None])[0]
-        end = query_params.get('end', [None])[0]
-        skip = int(query_params.get('skip', ['0'])[0])
-        _count = query_params.get('count', [None])[0]
+        start = query_params.get('start')
+        end = query_params.get('end')
+        skip = int(query_params.get('skip', 0))
+        _count = query_params.get('count')
         count = int(_count) if _count is not None else None
-        order = query_params.get('order', ['FIRST_TO_LAST'])[0]
+        order = query_params.get('order', 'FIRST_TO_LAST')
         # TODO: agg_type & agg_period not implemented, need to check response format of Aggregate Historians
         agg_type = None
         agg_period = None
