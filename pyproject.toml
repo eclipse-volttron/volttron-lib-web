@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "volttron-lib-web"
-version = "2.0.0rc2"
+version = "2.0.0rc3"
 description = "The volttron-lib-web library extends the platform by exposing a web based REST api and allows extension web agents to register with the platform."
 authors = ["VOLTTRON Team <volttron@pnnl.gov>"]
 license = "Apache-2.0"
