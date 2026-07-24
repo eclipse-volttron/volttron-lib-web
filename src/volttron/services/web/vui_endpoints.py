@@ -61,7 +61,162 @@ from .vui_pubsub import VUIPubsubManager
 
 
 import logging
+from logging.handlers import RotatingFileHandler
 _log = logging.getLogger(__name__)
+
+DEFAULT_LOG_TAIL = 200
+DEFAULT_LOG_BYTES = 65536
+MAX_LOG_BYTES = 1048576
+MAX_LOG_TAIL = 10000
+
+
+def _is_log_name(log_id: str, base_name: str) -> bool:
+    return log_id == base_name or bool(re.fullmatch(re.escape(base_name) + r"\.\d+", log_id))
+
+
+def _log_file_candidates():
+    paths = set()
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, logging.FileHandler):
+            filename = os.path.abspath(handler.baseFilename)
+            if os.path.isfile(filename):
+                paths.add(filename)
+    return paths
+
+
+def _available_log_files():
+    files = {}
+    for base_path in _log_file_candidates():
+        directory = os.path.dirname(base_path)
+        base_name = os.path.basename(base_path)
+        try:
+            filenames = os.listdir(directory)
+        except OSError:
+            continue
+        for filename in filenames:
+            if _is_log_name(filename, base_name):
+                path = os.path.join(directory, filename)
+                if os.path.isfile(path):
+                    stat = os.stat(path)
+                    files[filename] = {
+                        "id": filename,
+                        "file_id": f"{stat.st_dev}:{stat.st_ino}",
+                        "size_bytes": stat.st_size,
+                        "modified": stat.st_mtime,
+                    }
+    return sorted(files.values(), key=lambda item: item["id"])
+
+
+def _log_retention():
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, RotatingFileHandler):
+            max_bytes = handler.maxBytes
+            backups = handler.backupCount
+            if max_bytes > 0:
+                return {
+                    "max_file_bytes": max_bytes,
+                    "backup_count": backups,
+                    "max_total_bytes": max_bytes * (backups + 1),
+                }
+    return None
+
+
+def _read_log_file(log_id: str, tail: int, offset: int | None, before: int | None, max_bytes: int):
+    available = {item["id"] for item in _available_log_files()}
+    if log_id not in available:
+        raise FileNotFoundError(log_id)
+
+    base_path = next(
+        (path for path in _log_file_candidates() if _is_log_name(log_id, os.path.basename(path))),
+        None,
+    )
+    if base_path is None:
+        raise FileNotFoundError(log_id)
+    path = os.path.join(os.path.dirname(base_path), log_id)
+    stat = os.stat(path)
+    file_size = stat.st_size
+    file_id = f"{stat.st_dev}:{stat.st_ino}"
+    max_bytes = min(max(1, max_bytes), MAX_LOG_BYTES)
+
+    with open(path, "rb") as log_file:
+        if before is not None:
+            before = min(max(0, before), file_size)
+            start = max(0, before - max_bytes)
+            log_file.seek(start)
+            chunk = log_file.read(before - start)
+            previous_offset = start
+            if start and chunk:
+                log_file.seek(start - 1)
+                begins_mid_line = log_file.read(1) != b"\n"
+            else:
+                begins_mid_line = False
+            if begins_mid_line:
+                first_newline = chunk.find(b"\n")
+                if first_newline >= 0:
+                    previous_offset = start + first_newline + 1
+                    chunk = chunk[first_newline + 1:]
+            end_offset = before
+            if before < file_size and chunk:
+                log_file.seek(before - 1)
+                ends_mid_line = log_file.read(1) != b"\n"
+                if ends_mid_line:
+                    last_newline = chunk.rfind(b"\n")
+                    if last_newline >= 0:
+                        chunk = chunk[:last_newline + 1]
+                        end_offset = previous_offset + len(chunk)
+            return {
+                "lines": chunk.decode("utf-8", errors="replace").splitlines(),
+                "start_offset": previous_offset,
+                "end_offset": end_offset,
+                "previous_offset": previous_offset,
+                "next_offset": end_offset,
+                "total_bytes": file_size,
+                "file_id": file_id,
+                "log_id": log_id,
+                "has_older": previous_offset > 0,
+                "has_newer": before < file_size,
+            }
+
+        if offset is None:
+            start = max(0, file_size - max_bytes)
+            log_file.seek(start)
+            chunk = log_file.read(max_bytes)
+            if start:
+                first_newline = chunk.find(b"\n")
+                if first_newline >= 0:
+                    chunk = chunk[first_newline + 1:]
+            lines = chunk.decode("utf-8", errors="replace").splitlines()
+            return {
+                "lines": lines[-min(max(1, tail), MAX_LOG_TAIL):],
+                "next_offset": file_size,
+                "total_bytes": file_size,
+                "file_id": file_id,
+                "log_id": log_id,
+            }
+
+        offset = max(0, offset)
+        if offset >= file_size:
+            return {
+                "lines": [],
+                "next_offset": file_size,
+                "total_bytes": file_size,
+                "file_id": file_id,
+                "log_id": log_id,
+            }
+        log_file.seek(offset)
+        chunk = log_file.read(max_bytes)
+        next_offset = log_file.tell()
+        if chunk and not chunk.endswith(b"\n") and next_offset < file_size:
+            partial_start = chunk.rfind(b"\n") + 1
+            next_offset = offset + partial_start
+            chunk = chunk[:partial_start]
+        return {
+            "lines": chunk.decode("utf-8", errors="replace").splitlines(),
+            "next_offset": next_offset,
+            "total_bytes": file_size,
+            "file_id": file_id,
+            "log_id": log_id,
+        }
 
 
 class OverrideError(Exception):
@@ -167,6 +322,9 @@ class VUIEndpoints:
                     'known-hosts': {
                         'endpoint-active': False,
                     },
+                    'logs': {
+                        'endpoint-active': True,
+                    },
                     'pubsub': {
                         'endpoint-active': True,
                     },
@@ -222,6 +380,8 @@ class VUIEndpoints:
             (re.compile('^/vui/platforms/[^/]+/pubsub/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/pubsub/.*/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/status/?$'), 'callable', self.handle_platforms_status),
+            (re.compile('^/vui/platforms/[^/]+/logs/?$'), 'callable', self.handle_platforms_logs),
+            (re.compile('^/vui/platforms/[^/]+/logs/[^/]+/?$'), 'callable', self.handle_platforms_log),
             # (re.compile('^/vui/devices/?$'), 'callable', self.handle_vui_devices),
             # (re.compile('^/vui/devices/.+/?$'), 'callable', self.handle_vui_devices_topic),
             # (re.compile('^/vui/devices/hierarchy/?$'), 'callable', self.handle_vui_devices_hierarchy),
@@ -286,6 +446,40 @@ class VUIEndpoints:
                 agents = self._get_agents(platform, agent_state, include_hidden)
                 return Response(json.dumps(self._links(path_info, agents)), 200,
                                 content_type='application/json')
+
+    @endpoint
+    def handle_platforms_logs(self, env: dict, data: dict) -> Response | None:
+        if env.get("REQUEST_METHOD") != "GET":
+            return None
+        platform = re.match(r'^/vui/platforms/([^/]+)/logs/?$', env.get('PATH_INFO', '')).group(1)
+        if platform != self.local_instance_name:
+            return Response(json.dumps({"error": f"Unknown platform: {platform}"}), 404, content_type='application/json')
+        return Response(json.dumps({"logs": _available_log_files(), "retention": _log_retention()}), 200, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_log(self, env: dict, data: dict) -> Response | None:
+        if env.get("REQUEST_METHOD") != "GET":
+            return None
+        match = re.match(r'^/vui/platforms/([^/]+)/logs/([^/]+)/?$', env.get('PATH_INFO', ''))
+        platform, log_id = match.groups()
+        if platform != self.local_instance_name:
+            return Response(json.dumps({"error": f"Unknown platform: {platform}"}), 404, content_type='application/json')
+        query = _parse_query_params(env.get('QUERY_STRING', ''))
+        try:
+            tail = int(query.get('tail', DEFAULT_LOG_TAIL))
+            offset = int(query['offset']) if query.get('offset') is not None else None
+            before = int(query['before']) if query.get('before') is not None else None
+            max_bytes = int(query.get('bytes', DEFAULT_LOG_BYTES))
+            if tail < 1 or max_bytes < 1 or (offset is not None and offset < 0) or (before is not None and before < 0):
+                raise ValueError
+            if offset is not None and before is not None:
+                raise ValueError
+            result = _read_log_file(log_id, tail, offset, before, max_bytes)
+        except ValueError:
+            return Response(json.dumps({"error": "tail, offset, before, and bytes must be positive integers; offset and before cannot be combined"}), 400, content_type='application/json')
+        except FileNotFoundError:
+            return Response(json.dumps({"error": "Log file not found"}), 404, content_type='application/json')
+        return Response(json.dumps(result), 200, content_type='application/json')
 
     @endpoint
     def handle_platforms_agents_running(self, env: dict, data: dict) -> Response | None:
