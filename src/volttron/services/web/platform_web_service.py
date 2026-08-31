@@ -315,6 +315,37 @@ class PlatformWebService(Agent):
         _log.debug('Caller identity: {}'.format(identity))
         self.appContainer.destroy_ws_endpoint(endpoint)
 
+    @RPC.export
+    def get_packaged_configs(self) -> dict:
+        import importlib.metadata
+        import json
+
+        package_configs = {}
+        for dist in importlib.metadata.distributions():
+            name = dist.metadata.get("Name")
+            if name:
+                name_lower = name.lower()
+                if name_lower.startswith("volttron-") or name_lower.startswith("volttron_"):
+                    configs = {}
+                    if dist.files:
+                        for file_ref in dist.files:
+                            if "example" in file_ref.name and file_ref.name.endswith((".config", ".json")):
+                                try:
+                                    content = file_ref.read_text()
+                                    filename = os.path.basename(file_ref.name)
+                                    if filename.endswith(".json"):
+                                        try:
+                                            configs[filename] = json.loads(content)
+                                        except Exception:
+                                            configs[filename] = content
+                                    else:
+                                        configs[filename] = content
+                                except Exception as e:
+                                    _log.error(f"Failed to read file {file_ref.name} from distribution {name}: {e}")
+                    if configs:
+                        package_configs[name] = configs
+        return package_configs
+
     def _redirect_index(self, env, start_response, data=None):
         """ Redirect to the index page.
         @param env:
