@@ -53,8 +53,9 @@ def _parse_query_params(query_string: str, allow_multiple: tuple = ()) -> dict:
 from werkzeug import Response
 
 
-from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_WEB
 from volttron.client.vip.agent.subsystems.query import Query
+from volttron.utils.context import ClientContext
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
 from volttron.lib.tree import DeviceTree, TopicTree
 from .vui_pubsub import VUIPubsubManager
@@ -62,6 +63,9 @@ from .vui_pubsub import VUIPubsubManager
 
 import logging
 _log = logging.getLogger(__name__)
+
+DEFAULT_LOG_TAIL = 200
+DEFAULT_LOG_BYTES = 65536
 
 
 class OverrideError(Exception):
@@ -167,6 +171,12 @@ class VUIEndpoints:
                     'known-hosts': {
                         'endpoint-active': False,
                     },
+                    'logs': {
+                        'endpoint-active': True,
+                    },
+                    'packaged-configs': {
+                        'endpoint-active': True,
+                    },
                     'pubsub': {
                         'endpoint-active': True,
                     },
@@ -219,6 +229,9 @@ class VUIEndpoints:
             (re.compile('^/vui/platforms/[^/]+/historians/[^/]+/?$'), 'callable', self.handle_platforms_historians_historian),
             (re.compile('^/vui/platforms/[^/]+/historians/[^/]+/topics/?$'), 'callable', self.handle_platforms_historians_historian_topics),
             (re.compile('^/vui/platforms/[^/]+/historians/[^/]+/topics/.*/?$'), 'callable', self.handle_platforms_historians_historian_topics),
+            (re.compile('^/vui/platforms/[^/]+/logs/?$'), 'callable', self.handle_platforms_logs),
+            (re.compile('^/vui/platforms/[^/]+/logs/[^/]+/?$'), 'callable', self.handle_platforms_logs_log),
+            (re.compile('^/vui/platforms/[^/]+/packaged-configs/?$'), 'callable', self.handle_platforms_packaged_configs),
             (re.compile('^/vui/platforms/[^/]+/pubsub/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/pubsub/.*/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/status/?$'), 'callable', self.handle_platforms_status),
@@ -944,6 +957,96 @@ class VUIEndpoints:
                             status='501 Not Implemented', content_type='text/plain')
 
     @endpoint
+    def handle_platforms_logs(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/logs/
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        if request_method != "GET":
+            return Response(f'Endpoint {request_method} {path_info} is not implemented.',
+                            status='501 Not Implemented', content_type='text/plain')
+        platform = re.match(r'^/vui/platforms/([^/]+)/logs/?$', path_info).group(1)
+        if platform not in self._get_platforms():
+            return Response(json.dumps({"error": f"Unknown platform: {platform}"}), 404, content_type='application/json')
+        try:
+            result = self._rpc(CONTROL, 'list_logs', external_platform=platform)
+            return Response(json.dumps(result), 200, content_type='application/json')
+        except Timeout as e:
+            return Response(json.dumps({'error': f'RPC Timed Out: {e}'}), 504, content_type='application/json')
+        except Exception as e:
+            return Response(json.dumps({"error": f"Failed to list logs: {e}"}), 500, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_logs_log(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/logs/:log_id
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        if request_method != "GET":
+            return Response(f'Endpoint {request_method} {path_info} is not implemented.',
+                            status='501 Not Implemented', content_type='text/plain')
+        match = re.match(r'^/vui/platforms/([^/]+)/logs/([^/]+)/?$', path_info)
+        platform, log_id = match.groups()
+        if platform not in self._get_platforms():
+            return Response(json.dumps({"error": f"Unknown platform: {platform}"}), 404, content_type='application/json')
+        query = _parse_query_params(env.get('QUERY_STRING', ''))
+        try:
+            tail = int(query.get('tail', DEFAULT_LOG_TAIL))
+            offset = int(query['offset']) if query.get('offset') is not None else None
+            before = int(query['before']) if query.get('before') is not None else None
+            max_bytes = int(query.get('bytes', DEFAULT_LOG_BYTES))
+            if tail < 1 or max_bytes < 1 or (offset is not None and offset < 0) or (before is not None and before < 0):
+                raise ValueError
+            if offset is not None and before is not None:
+                raise ValueError
+        except ValueError:
+            return Response(json.dumps({"error": "tail, offset, before, and bytes must be positive integers; offset and before cannot be combined"}), 400, content_type='application/json')
+
+        try:
+            result = self._rpc(CONTROL, 'read_log', log_id, tail=tail, offset=offset, before=before, max_bytes=max_bytes, external_platform=platform)
+            return Response(json.dumps(result), 200, content_type='application/json')
+        except Timeout as e:
+            return Response(json.dumps({'error': f'RPC Timed Out: {e}'}), 504, content_type='application/json')
+        except (FileNotFoundError, RemoteError) as e:
+            err_msg = str(e)
+            if "not found" in err_msg.lower() or "filenotfound" in err_msg.lower():
+                return Response(json.dumps({"error": f"Log file not found: {log_id}"}), 404, content_type='application/json')
+            return Response(json.dumps({"error": f"Failed to read log: {e}"}), 500, content_type='application/json')
+        except Exception as e:
+            return Response(json.dumps({"error": f"Failed to read log: {e}"}), 500, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_packaged_configs(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/packaged-configs/
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        platform = re.match('^/vui/platforms/([^/]+)/packaged-configs/?$', path_info).groups()[0]
+
+        if request_method == 'GET':
+            if platform not in self._get_platforms():
+                error = {'error': f'Unknown platform: {platform}'}
+                return Response(json.dumps(error), 400, content_type='application/json')
+            try:
+                configs = self._rpc(PLATFORM_WEB, 'get_packaged_configs', external_platform=platform)
+                return Response(json.dumps(configs), 200, content_type='application/json')
+            except Exception as e:
+                error = {'error': f'Failed to retrieve packaged configs: {e}'}
+                return Response(json.dumps(error), 500, content_type='application/json')
+
+    @endpoint
     def handle_platforms_status(self, env: dict, data: dict) -> Response | None:
         """
         Endpoints for /vui/platforms/:platform/status/
@@ -987,7 +1090,7 @@ class VUIEndpoints:
     def _get_platforms(self):
         platforms = []
         try:
-            with open(join(self._agent.core.volttron_home, 'external_platform_discovery.json')) as f:
+            with open(join(ClientContext.get_volttron_home(), 'external_platform_discovery.json')) as f:
                 platforms = [platform for platform in json.load(f).keys()]
         except FileNotFoundError:
             _log.info('Did not find VOLTTRON_HOME/external_platform_discovery.json. Only local platform available.')
@@ -1012,7 +1115,7 @@ class VUIEndpoints:
         elif agent_state == 'installed':
             return [a['identity'] for a in agent_list]
         elif agent_state == 'packaged':
-            return [os.path.splitext(a)[0] for a in os.listdir(f'{self._agent.core.volttron_home}/packaged')]
+            return [os.path.splitext(a)[0] for a in os.listdir(f'{ClientContext.get_volttron_home()}/packaged')]
 
     def _get_agent_state(self, platform: str, vip_identity: str) -> str:
         agent_list = self._rpc(CONTROL, 'list_agents', external_platform=platform)
