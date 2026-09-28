@@ -67,34 +67,6 @@ def get_bearer(env):
         else:
             return None
 
-
-def get_user_claims(env, ssl_public_key):
-    algorithm, encode_key = __get_key_and_algorithm__(env, ssl_public_key)
-    bearer = get_bearer(env)
-    return jwt.decode(bearer, encode_key, algorithm=algorithm)
-
-
-def __get_key_and_algorithm__(env, ssl_public_key):
-    publickey = env.get("WEB_PUBLIC_KEY")
-    if publickey is not None or ssl_public_key is not None:
-        algorithm = 'RS256'
-    else:
-        algorithm = 'HS256'
-
-    if algorithm == 'HS256':
-        if ClientContext.get_config_param('web-secret-key') is None:
-            raise ValueError("invalid configuration detected web_secret_key must be set!")
-
-    if algorithm == 'RS256' and ssl_public_key is None:
-        encode_key = publickey
-    elif algorithm == 'RS256' and ssl_public_key:
-        encode_key = ssl_public_key
-    else:
-        encode_key = ClientContext.get_config_param('web-secret-key')
-
-    return algorithm, encode_key
-
-
 def get_user_claim_from_bearer(bearer, web_secret_key=None, tls_public_key=None):
     if web_secret_key is None and tls_public_key is None:
         raise ValueError("web_secret_key or tls_public_key must be set")
@@ -110,5 +82,5 @@ def get_user_claim_from_bearer(bearer, web_secret_key=None, tls_public_key=None)
         # if isinstance(tls_public_key, str):
         #     pubkey = CertWrapper.load_cert(tls_public_key)
 
-    claims = jwt.decode(bearer, pubkey, algorithms=algorithm)
+    claims = jwt.decode(bearer, pubkey, algorithms=[algorithm])
     return claims
