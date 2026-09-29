@@ -407,13 +407,25 @@ class PlatformWebService(Agent):
                 elif t == 'path':  # File service from agents on the platform.
                     if path_info == '/':
                         return self._redirect_index(env, start_response)
-                    server_path = v + path_info  # os.path.join(v, path_info)
-                    server_path = str(Path(server_path).resolve())
-                    _log.debug('Serverpath: {}'.format(server_path))
-                    # protects against relative server traversal.
-                    if not server_path.startswith(v):
+                    # Canonicalize the registered root first, then build the candidate path by joining
+                    # (lstrip avoids double-slash artifacts). Resolve both so symlinks and ".." segments
+                    # are fully expanded before comparison.
+                    # relative_to() raises ValueError when the candidate escapes the root, including the
+                    # boundary-of-the-boundary case where the root itself resolves outside its own prefix
+                    # (e.g. root="/srv/app", sibling="/srv/app-secrets").
+                    resolved_root = Path(v).resolve()
+                    candidate = (resolved_root / path_info.lstrip('/')).resolve()
+                    try:
+                        candidate.relative_to(resolved_root)
+                    except ValueError:
+                        _log.warning(
+                            'Path traversal attempt blocked: %s not under %s',
+                            candidate, resolved_root,
+                        )
                         start_response('403 Forbidden', [('Content-Type', 'text/html')])
                         return [b'<h1>403 Forbidden</h1>']
+                    server_path = str(candidate)
+                    _log.debug('Serverpath: {}'.format(server_path))
                     return self._sendfile(env, start_response, server_path)
 
         start_response('404 Not Found', [('Content-Type', 'text/html')])
@@ -545,9 +557,6 @@ class PlatformWebService(Agent):
         rpc_caller = self.vip.rpc
         if self.config.bind_address.scheme == 'https':
             if ssl_key is None or ssl_cert is None:
-                # Because the  platform.web service certificate is a client to rabbitmq we
-                # can't use it directly therefore we use the -server on the file to specify
-                # the server based file.
                 base_filename = ClientContext.get_fq_identity(self.core.identity) + "-server"
                 ssl_cert = self._certs.cert_file(base_filename)
                 ssl_key = self._certs.private_key_file(base_filename)
@@ -595,21 +604,6 @@ class PlatformWebService(Agent):
         else:
             svr = WSGIServer(((self.config.bind_address.host), port), self.appContainer)
         self._server_greenlet = gevent.spawn(svr.serve_forever)
-
-    def _authenticate_route(self, env, start_response, data):
-        scheme = env.get('wsgi.url_scheme')
-
-        if scheme != 'https':
-            _log.warning("Authentication should be through https")
-            start_response("401 Unauthorized", [('Content-Type', 'text/html')])
-            return "<html><body><h1>401 Unauthorized</h1></body></html>"
-
-        from pprint import pprint
-        pprint(env)
-
-        import jwt
-
-        jwt.encode()
 
     @Core.receiver('onstop')
     def onstop(self, sender, **kwargs):
