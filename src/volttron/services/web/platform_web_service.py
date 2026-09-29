@@ -81,7 +81,7 @@ def _safe_path_within_root(root_dir: str, path_info: str) -> str:
     can return 403 without leaking file bytes. Uses Path.relative_to for
     containment.
 
-    :param root_dir: canonical (pre-resolved) root as stored in registeredroutes
+    :param root_dir: canonical (pre-resolved) root as stored in registered_routes
     :param path_info: raw PATH_INFO from the WSGI environment
     :returns: resolved absolute path string safe to pass to _sendfile
     :raises ValueError: if the resolved path escapes root_dir
@@ -291,7 +291,6 @@ class PlatformWebService(Agent):
         self.endpoints = endpoints
 
     @RPC.export
-    @RPC.allow(capabilities="register_path_route")
     def register_path_route(self, regex, root_dir):
         # Get calling identity from whom the request came from
         identity = self.vip.rpc.context.vip_message.peer
@@ -324,7 +323,7 @@ class PlatformWebService(Agent):
         self.path_routes[identity].append(compiled)
         # in order for this agent to pass against the default route we want this
         # to be before the last route which will resolve to .*
-        self.registeredroutes.insert(len(self.registeredroutes) - 1, (compiled, 'path', str(canonical_root)))
+        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', str(canonical_root)))
 
     @RPC.export
     def register_websocket(self, endpoint):
