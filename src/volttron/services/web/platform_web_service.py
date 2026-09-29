@@ -74,6 +74,26 @@ class DuplicateEndpointError(Exception):
     pass
 
 
+def _safe_path_within_root(root_dir: str, path_info: str) -> str:
+    """Return the resolved candidate path if it is strictly within root_dir.
+
+    Raises ValueError when the resolved candidate escapes the root so callers
+    can return 403 without leaking file bytes. Uses Path.relative_to for
+    containment.
+
+    :param root_dir: canonical (pre-resolved) root as stored in registeredroutes
+    :param path_info: raw PATH_INFO from the WSGI environment
+    :returns: resolved absolute path string safe to pass to _sendfile
+    :raises ValueError: if the resolved path escapes root_dir
+    """
+    root = Path(root_dir).resolve()
+    # Strip leading slashes before joining so Path('/abs') does not replace root.
+    candidate = (root / path_info.lstrip('/')).resolve()
+    # relative_to raises ValueError when candidate is outside root.
+    candidate.relative_to(root)
+    return str(candidate)
+
+
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
 __TEMPLATE_DIR__ = os.path.join(__PACKAGE_DIR__, "templates")
 __STATIC_DIR__ = os.path.join(__PACKAGE_DIR__, "static")
@@ -271,21 +291,40 @@ class PlatformWebService(Agent):
         self.endpoints = endpoints
 
     @RPC.export
+    @RPC.allow(capabilities="register_path_route")
     def register_path_route(self, regex, root_dir):
         # Get calling identity from whom the request came from
         identity = self.vip.rpc.context.vip_message.peer
 
         _log.info(f'Registering web path route from {identity} regex: {regex} dir: {root_dir}')
 
+        # Canonicalize the root before any existence or containment check so symlinks, '..',
+        # and other path tricks resolve to their real location.
+        canonical_root = Path(root_dir).resolve()
+
+        # Reject the filesystem root: relative_to(Path('/')) succeeds for every path so a root of '/'
+        # degenerates the containment check into a no-op and allows serving /etc/passwd and the CURVE keystore.
+        # (data-invariants Rule 3: the boundary root itself is a candidate for the disallowed condition.)
+        if canonical_root == Path('/').resolve():
+            raise ValueError(
+                f"root_dir must not be the filesystem root: {root_dir!r}"
+            )
+
+        # Reject a root that is not a directory. A regular file as root is also a boundary violation:
+        # the serve-time join logic assumes a directory.
+        if not canonical_root.is_dir():
+            raise ValueError(
+                f"root_dir must be an existing directory: {root_dir!r}"
+            )
+
+        # TODO: Consider restricting registrable roots to an allowlist under a configured base path
+        #  or adding a configurable 'web_root_base' option that, when set, rejects any root_dir outside that base.
+
         compiled = re.compile(regex)
         self.path_routes[identity].append(compiled)
-        assert Path(root_dir).exists()
-        # Make sure we resolve the root directory so its easier to check
-        # later on.
-        root_dir = str(Path(root_dir).resolve(root_dir))
         # in order for this agent to pass against the default route we want this
         # to be before the last route which will resolve to .*
-        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', root_dir))
+        self.registeredroutes.insert(len(self.registeredroutes) - 1, (compiled, 'path', str(canonical_root)))
 
     @RPC.export
     def register_websocket(self, endpoint):
@@ -407,24 +446,22 @@ class PlatformWebService(Agent):
                 elif t == 'path':  # File service from agents on the platform.
                     if path_info == '/':
                         return self._redirect_index(env, start_response)
-                    # Canonicalize the registered root first, then build the candidate path by joining
-                    # (lstrip avoids double-slash artifacts). Resolve both so symlinks and ".." segments
-                    # are fully expanded before comparison.
-                    # relative_to() raises ValueError when the candidate escapes the root, including the
-                    # boundary-of-the-boundary case where the root itself resolves outside its own prefix
-                    # (e.g. root="/srv/app", sibling="/srv/app-secrets").
-                    resolved_root = Path(v).resolve()
-                    candidate = (resolved_root / path_info.lstrip('/')).resolve()
                     try:
-                        candidate.relative_to(resolved_root)
-                    except ValueError:
+                        server_path = _safe_path_within_root(v, path_info)
+                    except (ValueError, OSError):
+                        # ValueError: the resolved candidate escaped root
+                        # (traversal, absolute-path, prefix-sibling, symlink).
+                        # OSError: Path.resolve() on a broken symlink or a
+                        # permission error. Both are treated as 403 (fail-closed)
+                        # rather than propagating a 500.
+                        # VO-005/H2 warning log preserved: a rejection is a
+                        # security-relevant event and must stay observable.
                         _log.warning(
-                            'Path traversal attempt blocked: %s not under %s',
-                            candidate, resolved_root,
+                            'Path traversal attempt blocked: %s not under root %s',
+                            path_info, v,
                         )
                         start_response('403 Forbidden', [('Content-Type', 'text/html')])
                         return [b'<h1>403 Forbidden</h1>']
-                    server_path = str(candidate)
                     _log.debug('Serverpath: {}'.format(server_path))
                     return self._sendfile(env, start_response, server_path)
 
