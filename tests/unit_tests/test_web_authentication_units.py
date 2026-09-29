@@ -32,7 +32,7 @@ from deepdiff import DeepDiff
 from urllib.parse import urlencode
 
 from volttron.services.web import get_user_claim_from_bearer
-from volttron.services.web.admin_endpoints import AdminEndpoints
+from volttron.services.web.user_manager import add_web_user
 from volttron.services.web.authenticate_endpoint import AuthenticateEndpoints
 from volttron.utils.certs import CertWrapper
 from volttron.utils.messagebus import store_message_bus_config
@@ -98,9 +98,8 @@ def set_test_admin():
     authorize_ep = MockAuthenticateEndpoints(web_secret_key=get_random_key())
     authorize_ep.set_access_token_timeout(0.1)
     authorize_ep.set_refresh_token_timeout(0.2)
-    AdminEndpoints().add_user("test_admin", "Pass123", groups=['admin'])
+    add_web_user("test_admin", "Pass123", groups=['admin'])
     test_user = {"username": "test_admin", "password": "Pass123"}
-    gevent.sleep(1)
     return authorize_ep, test_user
 
 
@@ -235,8 +234,7 @@ def test_authenticate_endpoint(scheme):
         # TODO: Save kwargs to service_config.yml
         user = 'bogart'
         passwd = 'cat'
-        adminep = AdminEndpoints()
-        adminep.add_user(user, passwd)
+        add_web_user(user, passwd)
 
         env = get_test_web_env('/authenticate', method='POST')
 

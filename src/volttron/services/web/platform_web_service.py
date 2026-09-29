@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import gevent
+import html
 import gevent.pywsgi
 import logging
 import mimetypes
@@ -46,7 +47,6 @@ from .admin_endpoints import AdminEndpoints
 from .vui_endpoints import VUIEndpoints
 from .rpc_proxy_policy import RpcProxyPolicy
 from .authenticate_endpoint import AuthenticateEndpoints
-from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
 
 
@@ -54,7 +54,7 @@ from volttron.utils.certs import Certs, CertWrapper
 from volttron.utils.context import ClientContext
 from volttron.utils.jsonrpc import  UNAUTHORIZED
 
-from volttron.client.known_identities import PLATFORM_WEB
+from volttron.client.known_identities import PLATFORM_DRIVER, PLATFORM_WEB
 from volttron.client.vip.agent import Agent, Core, RPC
 from volttron.server.decorators import service
 from volttron.server.server_options import ServerOptions
@@ -170,6 +170,9 @@ tplenv = Environment(
     autoescape=select_autoescape(['html', 'xml'])
 )
 
+MIN_SECRET_KEY_BYTES = 32
+
+
 class WebServiceConfig(BaseModel):
     model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True,
                               arbitrary_types_allowed=True)
@@ -178,6 +181,8 @@ class WebServiceConfig(BaseModel):
     secret_key: SecretStr | None = Field(default=None, alias='web_secret_key')
     ssl_key: str | None = Field(default=None, alias='web_ssl_key')
     ssl_cert: str | None = Field(default=None, alias='web_ssl_cert')
+    # VIP identity of the driver agent the VUI device endpoints read and write points through.
+    driver_vip_identity: str = Field(default=PLATFORM_DRIVER)
     # Which RPC calls the VUI /rpc proxy may forward. Configured as the multi-line "rpc-allow-list" option of the
     # [web] section; see rpc_proxy_policy.py for the syntax. Empty by default, which closes the proxy.
     rpc_allow_list: RpcProxyPolicy = Field(default_factory=RpcProxyPolicy)
@@ -225,6 +230,12 @@ class WebServiceConfig(BaseModel):
         if self.bind_address.scheme == 'http' and self.secret_key is None:
             # TODO: Can we create a secret key for this session? Does that make sense?
             raise ValueError('Parameter "secret_key" is required when using the web service with an HTTP bind_address.')
+        if self.secret_key is not None and len(self.secret_key.get_secret_value().encode('utf-8')) < MIN_SECRET_KEY_BYTES:
+            # HS256 tokens are only as strong as the shared secret. RFC 7518 requires at least the hash output size.
+            raise ValueError(f'Parameter "web_secret_key" must be at least {MIN_SECRET_KEY_BYTES} bytes long.')
+        # The proxy must never reach the driver, whatever identity it runs under. Mutating the policy object (rather
+        # than assigning the field) avoids re-triggering validation under validate_assignment.
+        self.rpc_allow_list.denied_peers = self.rpc_allow_list.denied_peers | {self.driver_vip_identity}
         # TODO: We might want to handle cert loading here so we can validate if it is possible to get them?
         return self
 
@@ -260,7 +271,6 @@ class PlatformWebService(Agent):
 
         self._certs = Certs()
 
-        self._csr_endpoints: CSREndpoints | None = None
         self.appContainer: WebApplicationWrapper | None = None
         self._server_greenlet: Greenlet | None = None
         self._admin_endpoints: AdminEndpoints | None = None
@@ -281,30 +291,18 @@ class PlatformWebService(Agent):
         return self.config.ssl_key
 
     @property
+    def driver_vip_identity(self) -> str:
+        """
+        VIP identity of the driver agent used by the VUI device endpoints.
+        """
+        return self.config.driver_vip_identity
+
+    @property
     def rpc_proxy_policy(self) -> RpcProxyPolicy:
         """
         Policy deciding which RPC calls the VUI /rpc proxy may forward.
         """
         return self.config.rpc_allow_list
-
-    # pylint: disable=unused-argument
-    @Core.receiver('onsetup')
-    def onsetup(self, sender, **kwargs):
-        self.vip.rpc.export(self._auto_allow_csr, 'auto_allow_csr')
-        self.vip.rpc.export(self._is_auto_allow_csr, 'is_auto_allow_csr')
-
-    def _is_auto_allow_csr(self):
-        return self._csr_endpoints.auto_allow_csr
-
-    def _auto_allow_csr(self, auto_allow_csr):
-        self._csr_endpoints.auto_allow_csr = auto_allow_csr
-
-    def remove_unconnnected_routes(self):
-        peers = self.vip.peerlist().get()
-
-        for p in self.peer_routes:
-            if p not in peers:
-                del self.peer_routes[p]
 
     @RPC.export
     def get_user_claims(self, bearer):
@@ -320,10 +318,21 @@ class PlatformWebService(Agent):
 
         return claims if claims.get('grant_type') == 'access_token' else {}
 
+    def _websocket_owner_check(self, endpoint):
+        """Raise unless the calling peer registered the websocket endpoint."""
+        identity = self.vip.rpc.context.vip_message.peer
+        owner = self.appContainer._wsregistry.get(endpoint) if self.appContainer else None
+        if owner is None:
+            raise ValueError(f"Websocket endpoint {endpoint} is not registered.")
+        if owner != identity:
+            _log.warning(f"Peer {identity} attempted to use websocket endpoint {endpoint} owned by {owner}.")
+            raise PermissionError(f"Websocket endpoint {endpoint} is registered to another agent.")
+        return identity
+
     @RPC.export
     def websocket_send(self, endpoint, message):
-        _log.debug("Sending data to {} with message {}".format(endpoint,
-                                                               message))
+        self._websocket_owner_check(endpoint)
+        _log.debug("Sending data to websocket endpoint {}".format(endpoint))
         self.appContainer.websocket_send(endpoint, message)
 
     @RPC.export
@@ -333,15 +342,6 @@ class PlatformWebService(Agent):
     @RPC.export
     def get_bind_web_address(self):
         return self.config.bind_address
-
-    @RPC.export
-    def get_volttron_central_address(self):
-        """Return address of external Volttron Central
-
-        Note: this only applies to Volttron Central agents that are
-        running on a different platform.
-        """
-        return self.volttron_central_address
 
     @RPC.export
     def register_endpoint(self, endpoint, res_type):
@@ -496,6 +496,9 @@ class PlatformWebService(Agent):
             _log.warning(f"Peer {identity} attempted to register reserved websocket endpoint {endpoint}.")
             raise ReservedRouteError(f"Endpoint {endpoint} is reserved for the platform web service.")
         if self.appContainer:
+            existing = self.appContainer._wsregistry.get(endpoint)
+            if existing is not None and existing != identity:
+                raise DuplicateEndpointError(f"Websocket endpoint {endpoint} is registered to another agent.")
             self.appContainer.create_ws_endpoint(endpoint, identity)
         else:
             _log.error('Attempting to register endpoint without web'
@@ -505,9 +508,7 @@ class PlatformWebService(Agent):
 
     @RPC.export
     def unregister_websocket(self, endpoint):
-        # Get calling identity from whom the request came from
-        identity = self.vip.rpc.context.vip_message.peer
-
+        identity = self._websocket_owner_check(endpoint)
         _log.debug('Caller identity: {}'.format(identity))
         self.appContainer.destroy_ws_endpoint(endpoint)
 
@@ -707,8 +708,9 @@ class PlatformWebService(Agent):
                 if res['error']['code'] == UNAUTHORIZED:
                     start_response('401 Unauthorized', [
                         ('Content-Type', 'text/html')])
-                    message = res['error']['message']
-                    code = res['error']['code']
+                    # The message is supplied by the peer agent; escape it before embedding it in HTML.
+                    message = html.escape(str(res['error']['message']))
+                    code = html.escape(str(res['error']['code']))
                     return ['<h1>{}</h1>\n<h2>CODE:{}</h2>'.format(message, code).encode('utf-8')]
 
             start_response('200 OK',
@@ -812,7 +814,9 @@ class PlatformWebService(Agent):
         # Allow authentication endpoint from any https connection
         if self.config.bind_address.scheme == 'https':
             ssl_private_key = CertWrapper.get_private_key(ssl_key)
-            ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
+            # Use the resolved cert path: when the platform generated its own server certificate the configured
+            # value is None and only the local variable holds the file that was created above.
+            ssl_public_key = CertWrapper.get_cert_public_key(ssl_cert)
             for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
                 self.registered_routes.append(rt)
         else:

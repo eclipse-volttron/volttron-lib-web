@@ -45,7 +45,8 @@ from volttron.client.known_identities import AUTH
 from werkzeug import Response
 
 from volttron.services.web.platform_web_service import (PlatformWebService, WebServiceConfig, HiddenPathError,
-                                                        ReservedRouteError, PEER_ENV_KEYS, _safe_path_within_root)
+                                                        ReservedRouteError, DuplicateEndpointError, PEER_ENV_KEYS,
+                                                        _safe_path_within_root)
 from volttron.services.web.webapp import WebApplicationWrapper
 from volttron.types.auth import AuthException
 from volttron.utils import jsonrpc
@@ -408,7 +409,7 @@ class TestWebRootAllotment:
 
 
 class TestWebRootDirConfig:
-    KW = dict(bind_web_address='http://127.0.0.1:8080', messagebus='zmq', web_secret_key='unit-test-secret-key')
+    KW = dict(bind_web_address='http://127.0.0.1:8080', messagebus='zmq', web_secret_key='unit-test-secret-key-that-is-long-enough-for-hs256')
 
     def test_valid_directory_is_resolved(self, tmp_path):
         vh = tmp_path / "vh"
@@ -623,3 +624,61 @@ def test_authenticate_route_debug_method_absent():
     """The monolithic _authenticate_route pprint()'d the WSGI env, including bearer
     tokens, to stdout. It must not reappear."""
     assert not hasattr(PlatformWebService, '_authenticate_route')
+
+
+class TestWebsocketOwnership:
+    def test_only_owner_can_send_or_unregister(self, pws_with_container):
+        pws = pws_with_container
+        set_rpc_caller(pws, peer="owner")
+        pws.register_websocket('/ws/owner')
+        assert pws.appContainer._wsregistry == {'/ws/owner': 'owner'}
+
+        set_rpc_caller(pws, peer="intruder")
+        with pytest.raises(PermissionError):
+            pws.websocket_send('/ws/owner', 'hello')
+        with pytest.raises(PermissionError):
+            pws.unregister_websocket('/ws/owner')
+        with pytest.raises(DuplicateEndpointError):
+            pws.register_websocket('/ws/owner')
+        assert pws.appContainer._wsregistry == {'/ws/owner': 'owner'}
+
+        set_rpc_caller(pws, peer="owner")
+        pws.websocket_send('/ws/owner', 'hello')  # no clients connected; must not raise
+        pws.unregister_websocket('/ws/owner')
+        assert pws.appContainer._wsregistry == {}
+        assert '/ws/owner' not in pws.appContainer.endpoint_clients
+
+    def test_unknown_endpoint_is_rejected(self, pws_with_container):
+        pws = pws_with_container
+        with pytest.raises(ValueError):
+            pws.websocket_send('/ws/none', 'hello')
+        with pytest.raises(ValueError):
+            pws.unregister_websocket('/ws/none')
+
+
+def test_create_response_escapes_peer_supplied_error_html(mock_platform_web_service):
+    pws = mock_platform_web_service
+    start_response = MagicMock()
+    res = {'error': {'code': jsonrpc.UNAUTHORIZED, 'message': '<script>alert(1)</script>'}}
+    body = b"".join(pws.create_response(res, start_response)).decode('utf-8')
+    assert "401 Unauthorized" in start_response.call_args[0][0]
+    assert '<script>' not in body
+    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in body
+
+
+class TestWebServiceConfig:
+    def test_short_secret_key_is_rejected(self):
+        with pytest.raises(ValueError, match="at least 32 bytes"):
+            WebServiceConfig(message_bus='zmq', bind_web_address='http://127.0.0.1:8080', web_secret_key='short')
+
+    def test_http_requires_secret_key(self):
+        with pytest.raises(ValueError, match='secret_key'):
+            WebServiceConfig(message_bus='zmq', bind_web_address='http://127.0.0.1:8080')
+
+    def test_valid_config(self):
+        cfg = WebServiceConfig(message_bus='zmq', bind_web_address='http://127.0.0.1:8080',
+                               web_secret_key='x' * 32, driver_vip_identity='platform.driver2')
+        assert cfg.secret_key.get_secret_value() == 'x' * 32
+        assert cfg.driver_vip_identity == 'platform.driver2'
+        https = WebServiceConfig(message_bus='zmq', bind_web_address='https://127.0.0.1:8443')
+        assert https.secret_key is None

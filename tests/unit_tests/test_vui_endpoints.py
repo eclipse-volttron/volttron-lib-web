@@ -24,7 +24,6 @@
 
 import json
 import mock
-import pickle
 import pytest
 import re
 
@@ -33,9 +32,10 @@ from werkzeug import Response
 
 # mock.patch('volttron.services.web.vui_endpoints.endpoint', lambda x: x).start()
 
-from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_DRIVER
 
 from volttron.services.web.rpc_proxy_policy import RpcProxyPolicy
+from volttron.lib.tree import DeviceTree
 from volttron.services.web.vui_endpoints import VUIEndpoints
 from volttron.utils.jsonrpc import RemoteError
 
@@ -66,8 +66,33 @@ ACTIVE_ROUTES = {
             }
 }
 
-# TODO: Need new DEV_TREE: This pickle was built on monolithic.
-DEV_TREE = b'\x80\x04\x952\x11\x00\x00\x00\x00\x00\x00\x8c volttron.lib.topic_tree\x94\x8c\nDeviceTree\x94\x93\x94)\x81\x94}\x94(\x8c\x0b_identifier\x94\x8c$43dd9fcc-0066-11ec-afd5-f834419e14e3\x94\x8c\nnode_class\x94h\x00\x8c\nDeviceNode\x94\x93\x94\x8c\x06_nodes\x94}\x94(\x8c\x07devices\x94h\t)\x81\x94}\x94(h\x05h\x0c\x8c\x04_tag\x94h\x0c\x8c\x08expanded\x94\x88\x8c\x0c_predecessor\x94}\x94h\x06Ns\x8c\x0b_successors\x94\x8c\x0bcollections\x94\x8c\x0bdefaultdict\x94\x93\x94\x8c\x08builtins\x94\x8c\x04list\x94\x93\x94\x85\x94R\x94h\x06]\x94\x8c\x0edevices/Campus\x94as\x8c\x04data\x94N\x8c\x10_initial_tree_id\x94h\x06\x8c\x0csegment_type\x94\x8c\nTOPIC_ROOT\x94\x8c\x05topic\x94\x8c\x00\x94ubh\x1dh\t)\x81\x94}\x94(h\x05h\x1dh\x0f\x8c\x06Campus\x94h\x10\x88h\x11}\x94h\x06h\x0csh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c\x18devices/Campus/Building1\x94\x8c\x18devices/Campus/Building2\x94\x8c\x18devices/Campus/Building3\x94esh\x1eNh\x1fh\x06h \x8c\rTOPIC_SEGMENT\x94h"\x8c\x06Campus\x94ubh+h\t)\x81\x94}\x94(h\x05h+h\x0f\x8c\tBuilding1\x94h\x10\x88h\x11}\x94h\x06h\x1dsh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94\x8c\x1edevices/Campus/Building1/Fake1\x94ash\x1eNh\x1fh\x06h h.h"\x8c\x10Campus/Building1\x94ubh7h\t)\x81\x94}\x94(h\x05h7h\x0f\x8c\x05Fake1\x94h\x10\x88h\x11}\x94h\x06h+sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c3devices/Campus/Building1/Fake1/SampleWritableFloat1\x94\x8c*devices/Campus/Building1/Fake1/SampleBool1\x94esh\x1e}\x94(\x8c\rdriver_config\x94}\x94\x8c\x08interval\x94K<\x8c\x08timezone\x94\x8c\nUS/Pacific\x94\x8c\x0bdriver_type\x94\x8c\nfakedriver\x94\x8c\x19publish_breadth_first_all\x94\x89\x8c\x13publish_depth_first\x94\x89\x8c\x15publish_breadth_first\x94\x89\x8c\x06campus\x94\x8c\x06campus\x94\x8c\x08building\x94\x8c\x08building\x94\x8c\x04unit\x94\x8c\x0bfake_device\x94uh\x1fh\x06h \x8c\x06DEVICE\x94h"\x8c\x16Campus/Building1/Fake1\x94ubh@h\t)\x81\x94}\x94(h\x05h@h\x0f\x8c\x14SampleWritableFloat1\x94h\x10\x88h\x11}\x94h\x06h7sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(\x8c\nPoint Name\x94\x8c\x14SampleWritableFloat1\x94\x8c\x05Units\x94\x8c\x03PPM\x94\x8c\rUnits Details\x94\x8c\x111000.00 (default)\x94\x8c\x08Writable\x94\x8c\x04TRUE\x94\x8c\x0eStarting Value\x94\x8c\x0210\x94\x8c\x04Type\x94\x8c\x05float\x94\x8c\x05Notes\x94\x8c-Setpoint to enable demand control ventilation\x94uh\x1fh\x06h \x8c\x05POINT\x94h"\x8c+Campus/Building1/Fake1/SampleWritableFloat1\x94ubhAh\t)\x81\x94}\x94(h\x05hAh\x0f\x8c\x0bSampleBool1\x94h\x10\x88h\x11}\x94h\x06\x8c\x1edevices/Campus/Building1/Fake1\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(h]\x8c\x0bSampleBool1\x94h_\x8c\x08On / Off\x94ha\x8c\x06on/off\x94hc\x8c\x05FALSE\x94he\x8c\x04TRUE\x94hg\x8c\x07boolean\x94hi\x8c$Status indidcator of cooling stage 1\x94uh\x1fh\x06h hkh"\x8c"Campus/Building1/Fake1/SampleBool1\x94ubh,h\t)\x81\x94}\x94(h\x05h,h\x0f\x8c\tBuilding2\x94h\x10\x88h\x11}\x94h\x06\x8c\x0edevices/Campus\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94\x8c\x1edevices/Campus/Building2/Fake1\x94ash\x1eNh\x1fh\x06h h.h"\x8c\x10Campus/Building2\x94ubh\x86h\t)\x81\x94}\x94(h\x05h\x86h\x0f\x8c\x05Fake1\x94h\x10\x88h\x11}\x94h\x06h,sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c3devices/Campus/Building2/Fake1/SampleWritableFloat1\x94\x8c*devices/Campus/Building2/Fake1/SampleBool1\x94esh\x1e}\x94(\x8c\rdriver_config\x94}\x94\x8c\x08interval\x94K<\x8c\x08timezone\x94\x8c\nUS/Pacific\x94\x8c\x0bdriver_type\x94\x8c\nfakedriver\x94\x8c\x19publish_breadth_first_all\x94\x89\x8c\x13publish_depth_first\x94\x89\x8c\x15publish_breadth_first\x94\x89\x8c\x06campus\x94\x8c\x06campus\x94\x8c\x08building\x94\x8c\x08building\x94\x8c\x04unit\x94\x8c\x0bfake_device\x94uh\x1fh\x06h hSh"\x8c\x16Campus/Building2/Fake1\x94ubh\x8fh\t)\x81\x94}\x94(h\x05h\x8fh\x0f\x8c\x14SampleWritableFloat1\x94h\x10\x88h\x11}\x94h\x06h\x86sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(\x8c\nPoint Name\x94\x8c\x14SampleWritableFloat1\x94\x8c\x05Units\x94\x8c\x03PPM\x94\x8c\rUnits Details\x94\x8c\x111000.00 (default)\x94\x8c\x08Writable\x94\x8c\x04TRUE\x94\x8c\x0eStarting Value\x94\x8c\x0210\x94\x8c\x04Type\x94\x8c\x05float\x94\x8c\x05Notes\x94\x8c-Setpoint to enable demand control ventilation\x94uh\x1fh\x06h hkh"\x8c+Campus/Building2/Fake1/SampleWritableFloat1\x94ubh\x90h\t)\x81\x94}\x94(h\x05h\x90h\x0f\x8c\x0bSampleBool1\x94h\x10\x88h\x11}\x94h\x06\x8c\x1edevices/Campus/Building2/Fake1\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(h\xab\x8c\x0bSampleBool1\x94h\xad\x8c\x08On / Off\x94h\xaf\x8c\x06on/off\x94h\xb1\x8c\x05FALSE\x94h\xb3\x8c\x04TRUE\x94h\xb5\x8c\x07boolean\x94h\xb7\x8c$Status indidcator of cooling stage 1\x94uh\x1fh\x06h hkh"\x8c"Campus/Building2/Fake1/SampleBool1\x94ubh-h\t)\x81\x94}\x94(h\x05h-h\x0f\x8c\tBuilding3\x94h\x10\x88h\x11}\x94h\x06\x8c\x0edevices/Campus\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94\x8c\x1edevices/Campus/Building3/Fake1\x94ash\x1eNh\x1fh\x06h h.h"\x8c\x10Campus/Building3\x94ubh\xd3h\t)\x81\x94}\x94(h\x05h\xd3h\x0f\x8c\x05Fake1\x94h\x10\x88h\x11}\x94h\x06h-sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c3devices/Campus/Building3/Fake1/SampleWritableFloat1\x94\x8c*devices/Campus/Building3/Fake1/SampleBool1\x94esh\x1e}\x94(\x8c\rdriver_config\x94}\x94\x8c\x08interval\x94K<\x8c\x08timezone\x94\x8c\nUS/Pacific\x94\x8c\x0bdriver_type\x94\x8c\nfakedriver\x94\x8c\x19publish_breadth_first_all\x94\x89\x8c\x13publish_depth_first\x94\x89\x8c\x15publish_breadth_first\x94\x89\x8c\x06campus\x94\x8c\x06campus\x94\x8c\x08building\x94\x8c\x08building\x94\x8c\x04unit\x94\x8c\x0bfake_device\x94uh\x1fh\x06h hSh"\x8c\x16Campus/Building3/Fake1\x94ubh\xdch\t)\x81\x94}\x94(h\x05h\xdch\x0f\x8c\x14SampleWritableFloat1\x94h\x10\x88h\x11}\x94h\x06h\xd3sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(\x8c\nPoint Name\x94\x8c\x14SampleWritableFloat1\x94\x8c\x05Units\x94\x8c\x03PPM\x94\x8c\rUnits Details\x94\x8c\x111000.00 (default)\x94\x8c\x08Writable\x94\x8c\x04TRUE\x94\x8c\x0eStarting Value\x94\x8c\x0210\x94\x8c\x04Type\x94\x8c\x05float\x94\x8c\x05Notes\x94\x8c-Setpoint to enable demand control ventilation\x94uh\x1fh\x06h hkh"\x8c+Campus/Building3/Fake1/SampleWritableFloat1\x94ubh\xddh\t)\x81\x94}\x94(h\x05h\xddh\x0f\x8c\x0bSampleBool1\x94h\x10\x88h\x11}\x94h\x06\x8c\x1edevices/Campus/Building3/Fake1\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(h\xf8\x8c\x0bSampleBool1\x94h\xfa\x8c\x08On / Off\x94h\xfc\x8c\x06on/off\x94h\xfe\x8c\x05FALSE\x94j\x00\x01\x00\x00\x8c\x04TRUE\x94j\x02\x01\x00\x00\x8c\x07boolean\x94j\x04\x01\x00\x00\x8c$Status indidcator of cooling stage 1\x94uh\x1fh\x06h hkh"\x8c"Campus/Building3/Fake1/SampleBool1\x94ubu\x8c\x04root\x94h\x0c\x8c\x07_reader\x94X\x9c\x01\x00\x00devices\n\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Campus\n    \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 Building1\n    \xe2\x94\x82   \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Fake1\n    \xe2\x94\x82       \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 SampleBool1\n    \xe2\x94\x82       \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 SampleWritableFloat1\n    \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 Building2\n    \xe2\x94\x82   \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Fake1\n    \xe2\x94\x82       \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 SampleBool1\n    \xe2\x94\x82       \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 SampleWritableFloat1\n    \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Building3\n        \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Fake1\n            \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 SampleBool1\n            \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 SampleWritableFloat1\n\x94ub.'
+DEVICE_LIST = ['Campus/Building1/Fake1', 'Campus/Building2/Fake1', 'Campus/Building3/Fake1']
+DEVICE_CONFIG = {'driver_config': {}, 'interval': 60, 'timezone': 'US/Pacific', 'driver_type': 'fakedriver',
+                 'publish_breadth_first_all': False, 'publish_depth_first': False, 'publish_breadth_first': False,
+                 'campus': 'campus', 'building': 'building', 'unit': 'fake_device'}
+REGISTRY_CONFIG = [
+    {'Volttron Point Name': 'SampleWritableFloat1', 'Units': 'PPM', 'Units Details': '1000.00 (default)',
+     'Writable': 'TRUE', 'Starting Value': '10', 'Type': 'float',
+     'Notes': 'Setpoint to enable demand control ventilation'},
+    {'Volttron Point Name': 'SampleBool1', 'Units': 'On / Off', 'Units Details': 'on/off', 'Writable': 'FALSE',
+     'Starting Value': 'TRUE', 'Type': 'boolean', 'Notes': 'Status indidcator of cooling stage 1'}
+]
+
+
+def _build_device_tree() -> DeviceTree:
+    """Build the device tree the same way DeviceTree.from_store does, without a config store."""
+    devices = [f'devices/{d}' for d in DEVICE_LIST]
+    tree = DeviceTree(devices)
+    for d in devices:
+        # Node.topic reads data['topic'], which TopicTree.add_node set on creation; keep it when replacing data.
+        tree.update_node(d, data={'config': dict(DEVICE_CONFIG), 'segment_type': 'DEVICE',
+                                  'topic': d[len('devices/'):]})
+        for pnt in REGISTRY_CONFIG:
+            pnt = dict(pnt)
+            point_name = pnt.pop('Volttron Point Name')
+            n = tree.create_node(point_name, f"{d}/{point_name}", parent=d, data=pnt)
+            n.data['segment_type'] = 'POINT'
+    return tree
 
 
 def gen_response_codes(valid_codes: list, exclude: list = None):
@@ -294,6 +319,8 @@ def _mock_agents_rpc(peer, meth, *args, external_platform=None, **kwargs):
         return {'methods': ['list_agents', 'peerlist', 'status_agents']}
     elif peer == CONTROL and meth == 'status_agents.inspect':
         return {'params': {}}
+    elif meth == 'inspect':
+        return {'methods': ['some_method']}
     elif peer == 'agents_rpc' and meth == 'kw_only':
         return [kwargs['foo'], kwargs['bar']]
     elif peer == 'agents_rpc' and meth == 'args_and_kw':
@@ -326,6 +353,7 @@ def test_get_agents(mock_platform_web_service, agent_state, include_hidden, expe
 def test_handle_platforms_agents_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/agents', method=method, HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents(env, {})
     check_response_codes(response, status)
 
@@ -358,6 +386,7 @@ def test_handle_platforms_agents_agent_status_code(mock_platform_web_service, me
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/agent_vip', method=method,
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_agent(env, {})
     check_response_codes(response, status)
 
@@ -589,6 +618,7 @@ def test_handle_platforms_agents_rpc_status_code(mock_platform_web_service, meth
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
     vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_rpc(env, {})
     check_response_codes(response, status)
 
@@ -816,16 +846,16 @@ def test_handle_platforms_agents_tag_delete_response(mock_platform_web_service, 
 
 
 def _mock_devices_rpc(peer, meth, *args, external_platform=None, **kwargs):
-    if peer == 'platform.actuator' and meth == 'get_multiple_points':
+    if peer == PLATFORM_DRIVER and meth == 'get_multiple_points':
         ret_val = [{}, {}]
         for topic in args[0]:
             ret_val[0][topic] = 10.0
         return ret_val
-    elif peer == 'platform.actuator' and meth == 'set_multiple_points':
+    elif peer == PLATFORM_DRIVER and meth == 'set_multiple_points':
         return {}
-    elif peer == 'platform.actuator' and meth == 'revert_device':
+    elif peer == PLATFORM_DRIVER and meth == 'revert_device':
         return None
-    elif peer == 'platform.actuator' and meth == 'revert_point':
+    elif peer == PLATFORM_DRIVER and meth == 'revert_point':
         return None
     elif peer == 'platform.tagging' and meth == 'get_topics_by_tag':
         return []
@@ -833,7 +863,7 @@ def _mock_devices_rpc(peer, meth, *args, external_platform=None, **kwargs):
 
 @pytest.mark.parametrize("method, status", gen_response_codes(['GET', 'PUT', 'DELETE']))
 def test_handle_platforms_devices_status_code(mock_platform_web_service, method, status):
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env('/vui/platforms/my_instance_name/devices/Campus/Building1/Fake1/SampleWritableFloat1',
                                method=method, HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -860,7 +890,7 @@ def test_handle_platforms_devices_get_response(mock_platform_web_service, topic,
                                                return_writability, return_values, return_config):
     query_string = f'read-all={read_all}&routes={return_routes}&writability={return_writability}' \
                    f'&values={return_values}&config={return_config}'
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env(f'/vui/platforms/my_instance_name/devices/{topic}', query_string=query_string,
                                method='GET', HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -897,7 +927,7 @@ def test_handle_platforms_devices_get_response(mock_platform_web_service, topic,
 ])
 def test_handle_platforms_devices_put_response(mock_platform_web_service, topic, is_point, write_all, confirm_values):
     query_string = f'write-all={write_all}&confirm-values={confirm_values}'
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env(f'/vui/platforms/my_instance_name/devices/{topic}', query_string=query_string,
                                method='PUT', HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -936,7 +966,7 @@ def test_handle_platforms_devices_put_response(mock_platform_web_service, topic,
 def test_handle_platforms_devices_delete_response(mock_platform_web_service, topic, is_point, write_all,
                                                   confirm_values):
     query_string = f'write-all={write_all}&confirm-values={confirm_values}'
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env(f'/vui/platforms/my_instance_name/devices/{topic}', query_string=query_string,
                                method='DELETE', HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -995,6 +1025,7 @@ def _mock_historians_rpc(peer, meth, *args, external_platform=None, **kwargs):
 def test_handle_platforms_historians_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/historians', method=method, HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_historians(env, {})
     check_response_codes(response, status)
 
@@ -1030,6 +1061,7 @@ def test_handle_platforms_historians_historian_topics_status_code(mock_platform_
     env = get_test_web_env('/vui/platforms/my_instance_name/historians/my_instance_name/topics', method=method,
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_historians_rpc
     response = vui_endpoints.handle_platforms_historians_historian_topics(env, {})
     check_response_codes(response, status)
 
