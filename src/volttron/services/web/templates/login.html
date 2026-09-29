@@ -38,14 +38,14 @@
                         200: function(response){
                             if(location.protocol != 'https:'){
                                 console.log("HTTP");
-                                document.cookie = "Bearer="+response.access_token+"; path=/";
+                                document.cookie = "Bearer="+response.access_token+"; path=/; SameSite=Strict";
                             }
                             else{
                                 console.log("HTTPS");
-                                document.cookie = "Bearer="+response.access_token+"; secure=True; path=/";
+                                document.cookie = "Bearer="+response.access_token+"; Secure; path=/; SameSite=Strict";
                             }
 
-                            window.location=window.location.origin + "/admin/pending_auth_reqs.html";
+                            window.location=window.location.origin + "/admin/index.html";
                         }
                     }
 

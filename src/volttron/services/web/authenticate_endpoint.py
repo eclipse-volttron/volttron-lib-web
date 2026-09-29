@@ -41,6 +41,10 @@ from volttron.utils.persistance import PersistentDict
 
 _log = logging.getLogger(__name__)
 
+# Hash verified against when a login names an unknown user, so that the response time does not reveal which
+# usernames exist. Generated once at import; the password is never accepted.
+_UNKNOWN_USER_HASH = argon2.hash(os.urandom(32).hex())
+
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
 __TEMPLATE_DIR__ = os.path.join(__PACKAGE_DIR__, "templates")
 __STATIC_DIR__ = os.path.join(__PACKAGE_DIR__, "static")
@@ -139,7 +143,13 @@ class AuthenticateEndpoints(object):
         :return:
         """
 
-        assert len(self._userdict) > 0, "No users in user dictionary, set the administrator password first!"
+        if len(self._userdict) == 0:
+            # Users may have been added since startup (vctl web create-admin). The file watcher does not see the
+            # atomic rename used by the writers, so refresh from disk before refusing.
+            self.reload_userdict()
+        if len(self._userdict) == 0:
+            _log.error("No web users are configured. Create one with 'vctl web create-admin'.")
+            return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
 
         if not isinstance(data, dict):
             _log.debug("data is not a dict, decoding")
@@ -153,8 +163,6 @@ class AuthenticateEndpoints(object):
             username = data.get('username')
             password = data.get('password')
 
-        _log.debug("Username is: {}".format(username))
-
         error = ""
         if username is None:
             error += "Invalid username passed"
@@ -167,8 +175,8 @@ class AuthenticateEndpoints(object):
 
         user = self.__get_user(username, password)
         if user is None:
-            _log.error("No matching user for passed username: {}".format(username))
-            return Response(json.dumps({'error': 'Not Authorized'}), status='401', content_type='application/json')
+            _log.warning("Failed web login attempt from {}".format(env.get('REMOTE_ADDR')))
+            return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
         access_token, refresh_token = self._get_tokens(user)
         response = Response(json.dumps({"refresh_token": refresh_token, "access_token": access_token}),
                             content_type="application/json")
@@ -258,11 +266,19 @@ class AuthenticateEndpoints(object):
         :return:
         """
         user = self._userdict.get(username)
+        if user is None:
+            # The user may have been created since the dictionary was last loaded; the file watcher misses the
+            # atomic rename performed by the writers, so look once more before deciding.
+            self.reload_userdict()
+            user = self._userdict.get(username)
         if user is not None:
             hashed_pass = user.get('hashed_password')
             if hashed_pass and argon2.verify(password, hashed_pass):
                 usr_cpy = user.copy()
                 del usr_cpy['hashed_password']
                 return usr_cpy
+            return None
+        # Unknown user: spend the same argon2 work as a real verification so timing does not leak usernames.
+        argon2.verify(password, _UNKNOWN_USER_HASH)
         return None
 

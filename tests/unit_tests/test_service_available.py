@@ -22,10 +22,14 @@
 # ===----------------------------------------------------------------------===
 # }}}
 
-from volttrontesting import PlatformWrapper
+"""The platform loads services through the ``@service`` registry; the web service must be registered there."""
+from volttron.client.known_identities import PLATFORM_WEB
+from volttron.server.decorators import service
+
+# Importing the module performs the registration.
+from volttron.services.web.platform_web_service import PlatformWebService
 
 
-def test_web_service_available():
-    p = PlatformWrapper()
-    names = p.get_service_names()
-    assert 'volttron.services.web' in names
+def test_web_service_registered():
+    assert service.registry.get(PLATFORM_WEB) is PlatformWebService
+    assert PlatformWebService.Meta.identity == PLATFORM_WEB

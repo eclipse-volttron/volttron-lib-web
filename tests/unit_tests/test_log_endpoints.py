@@ -1,5 +1,6 @@
 import json
 from unittest.mock import MagicMock, patch
+import importlib
 import pytest
 
 from volttron.services.web.vui_endpoints import VUIEndpoints
@@ -138,6 +139,9 @@ def test_handle_platforms_logs_log_not_found(vui_endpoints):
     assert response.status_code == 404
 
 
+@pytest.mark.skipif(not hasattr(importlib.import_module('volttron.server.logs'), 'get_available_logs'),
+                    reason="volttron-core does not yet provide get_available_logs/read_log_file "
+                           "(feat/control-service-log-rpc)")
 def test_integration_vui_endpoints_with_core_log_reader(tmp_path, vui_endpoints):
     from volttron.server.logs import get_available_logs, read_log_file
 

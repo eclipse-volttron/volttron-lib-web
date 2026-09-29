@@ -49,9 +49,7 @@ class VUIPubsubManager:
         return {t: str(w) for t, w in self.user_websockets[access_token].items()}
 
     def open_subscription_socket(self, access_token, topic):
-        _log.debug('In open_subscription_socket:')
-        _log.debug((f'access_token: {access_token}'))
-        _log.debug(f'topic: {topic}')
+        _log.debug(f'In open_subscription_socket for topic: {topic}')
         ws = self.subscription_websockets.get(topic)
         _log.debug(f'subscription_websockets has: {ws}')
         if not ws:
@@ -137,7 +135,21 @@ class VUIWebSocket(WebSocket):
     def opened(self):
         _log.info('Socket opened')
         app = self.environ['ws4py.app']
-        topic, access_token = self._get_topic()
+        topic = self.environ['PATH_INFO'].split('/pubsub/')[1]
+        # The HTTP upgrade request was authorized by the VUI endpoint decorator, but the websocket outlives the
+        # request. Re-validate here so a socket is never subscribed for a token that does not carry the vui group.
+        from volttron.services.web.vui_endpoints import authorized_groups
+        try:
+            groups = authorized_groups(app._agent, self.environ)
+            topic, access_token = self._get_topic()
+        except Exception as e:
+            _log.warning(f'Closing websocket for {topic}: token did not validate ({e.__class__.__name__}).')
+            self.close(reason='Not Authorized')
+            return
+        if 'vui' not in groups:
+            _log.warning(f'Closing websocket for {topic}: token lacks the vui group.')
+            self.close(reason='Not Authorized')
+            return
         app.client_opened(self, topic, access_token)
 
     def received_message(self, m):

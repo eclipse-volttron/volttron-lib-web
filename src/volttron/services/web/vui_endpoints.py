@@ -23,6 +23,7 @@
 # }}}
 
 import functools
+import inspect
 import os
 import re
 import json
@@ -76,7 +77,6 @@ def _forbidden_rpc_response(platform, vip_identity, method_name=None):
     return Response(json.dumps({'error': f'RPC to {target} is not permitted through the web API.'}), 403,
                     content_type='application/json')
 
-
 class OverrideError(Exception):
     """Error raised by driver when the user tries to set/revert point when global override is set."""
     pass
@@ -89,23 +89,34 @@ class LockError(Exception):
 
 
 def endpoint(func):
+    """Authenticate and authorize a VUI request before dispatching to the wrapped handler.
+
+    Handlers take either (env, data) or (env, start_response, data). PlatformWebService.app_routing first calls a
+    callable route with three arguments and falls back to two on TypeError, so the arity check below must raise
+    TypeError before any other work is done.
+    """
+    takes_start_response = 'start_response' in inspect.signature(func).parameters
+    expected_args = 2 if takes_start_response else 1
+
     @functools.wraps(func)
-    def verify_and_dispatch(self, env, data):
-        from volttron.services.web import get_bearer
+    def verify_and_dispatch(self, env, *args):
+        if len(args) != expected_args:
+            raise TypeError(f'{func.__name__}() takes {expected_args + 2} positional arguments but '
+                            f'{len(args) + 2} were given')
         try:
-            claims = self._agent.get_user_claims(get_bearer(env))
+            groups = authorized_groups(self._agent, env)
         except Exception as e:
             _log.warning(f"Unauthorized user attempted to connect to {env.get('PATH_INFO')}. Caught Exception: {e}")
-            return Response(json.dumps({'error': 'Not Authorized'}), 401, content_type='app/json')
+            return Response(json.dumps({'error': 'Not Authorized'}), 401, content_type='application/json')
 
         # Only allow only users with API permissions:
-        if 'vui' not in claims.get('groups'):
-            _log.warning(f"Unauthorized user attempted to connect with 'vui' claim to {env.get('PATH_INFO')}.")
-            return Response(json.dumps({'error': 'Not Authorized'}), 403, content_type='app/json')
+        if 'vui' not in groups:
+            _log.warning(f"Unauthorized user attempted to connect without 'vui' claim to {env.get('PATH_INFO')}.")
+            return Response(json.dumps({'error': 'Not Authorized'}), 403, content_type='application/json')
 
         # Dispatch endpoint:
         try:
-            response = func(self, env, data)
+            response = func(self, env, *args)
             if not response:
                 message = f"Endpoint {env['REQUEST_METHOD']} {env['PATH_INFO']} is not implemented."
                 return Response(json.dumps({"error": message}), status=501, content_type='application/json')
@@ -116,6 +127,20 @@ def endpoint(func):
         except Exception as e:
             return Response(json.dumps({'error': f'Unexpected Error: {e}'}), 500, content_type='application/json')
     return verify_and_dispatch
+
+
+def authorized_groups(agent, env) -> list:
+    """Validate the bearer token in env against the web service and return the user's groups.
+
+    Raises if there is no token or the token does not validate. Never returns None, so callers can test group
+    membership directly. Tokens that validate but carry no groups (e.g. a refresh token) yield an empty list.
+    """
+    from volttron.services.web import get_bearer, NotAuthorized
+    bearer = get_bearer(env)
+    if not bearer:
+        raise NotAuthorized("No bearer token supplied.")
+    claims = agent.get_user_claims(bearer) or {}
+    return list(claims.get('groups') or [])
 
 
 class VUIEndpoints:
@@ -478,7 +503,7 @@ class VUIEndpoints:
             except StopIteration:
                 return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}),
                                 400, content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
 
@@ -490,7 +515,7 @@ class VUIEndpoints:
                 uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
                 self._rpc(CONTROL, 'prioritize_agent', uuid, priority, external_platform=platform)
                 return Response(status=204)
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
 
@@ -499,7 +524,7 @@ class VUIEndpoints:
                 uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
                 self._rpc(CONTROL, 'prioritize_agent', uuid, None, external_platform=platform)
                 return Response(status=204)
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
 
@@ -557,7 +582,7 @@ class VUIEndpoints:
                     result = self._rpc(vip_identity, method_name, *data, external_platform=platform)
                 else:
                     raise ValueError(f'Malformed message body: {data}')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'for agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
             return Response(json.dumps(result), 200, content_type='application/json')
@@ -583,7 +608,7 @@ class VUIEndpoints:
             except KeyError:
                 return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}),
                                 400, content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent  {e}'}),
                                 400, content_type='application/json')
 
@@ -606,7 +631,7 @@ class VUIEndpoints:
             except StopIteration:
                 return Response(json.dumps({'error': f"Agent '{vip_identity}' not found."}),
                                 400, content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f"For agent '{vip_identity}': {e}"}),
                                 400, content_type='application/json')
 
@@ -806,14 +831,13 @@ class VUIEndpoints:
             return Response(f'Endpoint {request_method} {path_info} is not implemented.',
                             status=501, content_type='text/plain')
 
+    @endpoint
     def handle_platforms_pubsub(self, env: dict, start_response, data: dict):
-        from volttron.services.web import get_bearer  # TODO: Is this necessary, with bearer imported in decorator?
+        from volttron.services.web import get_bearer
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = _parse_query_params(env['QUERY_STRING'])
-        _log.debug('VUI.handle_platforms_pubsub -- env is: ')
-        _log.debug({k: str(v) for k, v in env.items()})
-        _log.debug(f'HTTP_AUTHORIZATION is: {env["HTTP_AUTHORIZATION"]}')
+        # The access token has already been validated by @endpoint; it is used here only as the key that groups
+        # a user's websockets. It must never be logged.
         access_token = get_bearer(env)
 
         no_topic = re.match('^/vui/platforms/([^/]+)/pubsub/?$', path_info)
@@ -832,8 +856,6 @@ class VUIEndpoints:
             else:
                 ws = self.pubsub_manager.open_subscription_socket(access_token, topic)
                 env['ws4py.app'] = self.pubsub_manager
-                _log.debug('ENV is:')
-                _log.debug(env)
                 return [ws(env, start_response)]
 
         elif request_method == 'PUT':
@@ -1080,7 +1102,7 @@ class VUIEndpoints:
                 status_dict = self._get_status(platform)
                 return Response(json.dumps(status_dict), 200,
                                 content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent  {e}'}),
                                 400, content_type='application/json')
         if request_method == 'DELETE':
