@@ -27,7 +27,6 @@ from __future__ import annotations
 import base64
 import gevent
 import gevent.pywsgi
-import jwt
 import logging
 import mimetypes
 import os
@@ -52,13 +51,13 @@ from .webapp import WebApplicationWrapper
 
 from volttron.utils.certs import Certs, CertWrapper
 from volttron.utils.context import ClientContext
-from volttron.utils.jsonrpc import INVALID_REQUEST, UNHANDLED_EXCEPTION, UNAUTHORIZED, UNAVAILABLE_PLATFORM
+from volttron.utils.jsonrpc import  UNAUTHORIZED
 
 from volttron.client.known_identities import PLATFORM_WEB
-from volttron.client.vip.agent import Agent, Core, RPC, Unreachable
+from volttron.client.vip.agent import Agent, Core, RPC
 from volttron.server.decorators import service
 from volttron.server.server_options import ServerOptions
-from volttron.utils import jsonapi, jsonrpc
+from volttron.utils import jsonapi
 from volttron.utils import set_agent_identity
 
 # must be after importing of utils which imports grequest.
@@ -177,11 +176,7 @@ class PlatformWebService(Agent):
     @RPC.export
     def get_user_claims(self, bearer):
         from ..web import get_user_claim_from_bearer
-        if self.config.message_bus == 'rmq':
-            claims = get_user_claim_from_bearer(bearer,
-                                                tls_public_key=self._certs.get_cert_public_key(
-                                                    ClientContext.get_fq_identity(self.core.identity)))
-        elif self.ssl_cert is not None:
+        if self.ssl_cert is not None:
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=CertWrapper.get_cert_public_key(self.ssl_cert))
         elif self.config.secret_key is not None:
@@ -356,14 +351,6 @@ class PlatformWebService(Agent):
 
         if self.is_json_content(env):
             data = jsonapi.loads(data)
-
-        # Only if https available and rmq for the admin area.
-        if env['wsgi.url_scheme'] == 'https' and self.config.message_bus == 'rmq':
-            # Load the publickey that was used to sign the login message through the env
-            # parameter so agents can use it to verify the Bearer has specific
-            # jwt claims
-            passenv['WEB_PUBLIC_KEY'] = env['WEB_PUBLIC_KEY'] = self._certs.get_cert_public_key(
-                ClientContext.get_fq_identity(self.core.identity)).decode('utf-8')
 
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.
@@ -551,123 +538,12 @@ class PlatformWebService(Agent):
 
         return FileWrapper(open(filename, 'rb'))
 
-    def _to_jsonrpc_obj(self, jsonrpcstr):
-        """ Convert data string into a JsonRpcData named tuple.
-
-        :param object data: Either a string or a dictionary representing a json document.
-        """
-        return jsonrpc.JsonRpcData.parse(jsonrpcstr)
-
-    def jsonrpc(self, env, data):
-        """ The main entry point for ^jsonrpc data
-
-        This method will only accept rpcdata.  The first time this method
-        is called, per session, it must be using get_authorization.  That
-        will return a session token that must be included in every
-        subsequent request.  The session is tied to the ip address
-        of the caller.
-
-        :param object env: Environment dictionary for the request.
-        :param object data: The JSON-RPC 2.0 method to call.
-        :return object: An JSON-RPC 2.0 response.
-        """
-        if env['REQUEST_METHOD'].upper() != 'POST':
-            return Response(jsonapi.dumps(jsonrpc.json_error('NA', INVALID_REQUEST,
-                                      'Invalid request method, only POST allowed')), content_type="application/json")
-
-        try:
-            rpcdata = self._to_jsonrpc_obj(data)
-            _log.info('rpc method: {}'.format(rpcdata.method))
-
-            # Authenticate rpc call
-            if 'authentication' in rpcdata.params:
-                if self.jsonrpc_verify_and_dispatch(rpcdata.params['authentication']):
-                    del rpcdata.params['authentication']
-                else:
-                    return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                           "Invalid username/password specified.")),
-                                        content_type="application/json")
-            else:
-                return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                                     "Authentication parameter missing.")),
-                                    content_type="application/json")
-
-            if not rpcdata.method:
-                return Response(jsonapi.dumps(jsonrpc.json_error(
-                    'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
-            else:
-                if rpcdata.params:
-                    result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method, **rpcdata.params).get()
-                else:
-                    result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method).get()
-
-        except AssertionError:
-            return Response(jsonapi.dumps(jsonrpc.json_error(
-                'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
-        except Unreachable:
-            return Response(
-                jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAVAILABLE_PLATFORM,
-                                                 "Couldn't reach platform with method {} params: {}".format(
-                                                     rpcdata.method, rpcdata.params))),
-                content_type="application/json")
-        except Exception as e:
-
-            return Response(jsonapi.dumps(jsonrpc.json_error('NA', UNHANDLED_EXCEPTION, e)),
-                                content_type="application/json")
-
-        return Response(jsonapi.dumps(self._get_jsonrpc_response(rpcdata.id, result_or_error)),
-                            content_type="application/json")
-
-    def _get_jsonrpc_response(self, id, result_or_error):
-        """ Wrap the response in either a json-rpc error or result.
-
-        :param id:
-        :param result_or_error:
-        :return:
-        """
-        if isinstance(result_or_error, dict):
-            if 'jsonrpc' in result_or_error:
-                return result_or_error
-
-        if result_or_error is not None and isinstance(result_or_error, dict):
-            if 'error' in result_or_error:
-                error = result_or_error['error']
-                _log.debug("RPC RESPONSE ERROR: {}".format(error))
-                return jsonrpc.json_error(id, error['code'], error['message'])
-        return jsonrpc.json_result(id, result_or_error)
-
-    def jsonrpc_verify_and_dispatch(self, authentication):
-        """ Verify that the user is an admin
-
-        :param authentication: authentication generated by successful authentication
-        :return: Boolean
-        """
-        from ..web import NotAuthorized
-        try:
-            claims = self.get_user_claims(authentication)
-        except NotAuthorized:
-            _log.error("Unauthorized user attempted to connect to platform.")
-            return False
-        except jwt.ExpiredSignatureError:
-            _log.error("User attempted to connect with an expired signature.")
-            return False
-
-        return True
-
-
-
     @Core.receiver('onstart')
     def startupagent(self, sender, **kwargs):
         ssl_key = self.config.ssl_key
         ssl_cert = self.config.ssl_cert
         rpc_caller = self.vip.rpc
         if self.config.bind_address.scheme == 'https':
-            # Admin interface is only available to rmq at present.
-            if self.config.message_bus == 'rmq':
-                self._admin_endpoints = AdminEndpoints(rmq_mgmt=self.core.rmq_mgmt,
-                                                       ssl_public_key=self._certs.get_cert_public_key(
-                                                           ClientContext.get_fq_identity(self.core.identity)),
-                                                       rpc_caller=rpc_caller)
             if ssl_key is None or ssl_cert is None:
                 # Because the  platform.web service certificate is a client to rabbitmq we
                 # can't use it directly therefore we use the -server on the file to specify
@@ -685,18 +561,6 @@ class PlatformWebService(Agent):
         else:
             self._admin_endpoints = AdminEndpoints(rpc_caller=rpc_caller)
         _log.info(f'Starting web server binding to {self.config.bind_address}.')
-        # Handle the platform.web routes here.
-        #self.registeredroutes.append((re.compile('^/discovery/$'), 'callable', self._get_discovery))
-        #self.registeredroutes.append((re.compile('^/discovery/allow$'), 'callable', self._allow))
-        self.registered_routes.append((re.compile(r'/gs'), 'callable', self.jsonrpc))
-        # these routes are only available for rmq based message bus
-        # at present.
-        if self.config.message_bus == 'rmq':
-            # We need reference to the object so we can change the behavior of
-            # whether or not to have auto certs be created or not.
-            self._csr_endpoints = CSREndpoints(self.core)
-            for rt in self._csr_endpoints.get_routes():
-                self.registered_routes.append(rt)
 
         # Register the admin endpoints regardless of whether there is an ssl context
         # or not.
@@ -709,12 +573,8 @@ class PlatformWebService(Agent):
 
         # Allow authentication endpoint from any https connection
         if self.config.bind_address.scheme == 'https':
-            if self.config.message_bus == 'rmq':
-                ssl_private_key = self._certs.get_pk_bytes(ClientContext.get_fq_identity(self.core.identity))
-                ssl_public_key = self._certs.get_cert_public_key(ClientContext.get_fq_identity(self.core.identity))
-            else:
-                ssl_private_key = CertWrapper.get_private_key(ssl_key)
-                ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
+            ssl_private_key = CertWrapper.get_private_key(ssl_key)
+            ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
             for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
                 self.registered_routes.append(rt)
         else:
