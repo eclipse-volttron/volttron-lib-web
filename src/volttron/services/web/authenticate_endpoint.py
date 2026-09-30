@@ -186,7 +186,13 @@ class AuthenticateEndpoints(object):
         claims['exp'] = now + timedelta(minutes=self.refresh_token_timeout)
         claims['grant_type'] = 'refresh_token'
         refresh_token = jwt.encode(claims, encode_key, algorithm=algorithm)
-        return access_token.decode('utf-8'), refresh_token.decode('utf8')
+        # PyJWT 2.x encode returns str; 1.x returned bytes requiring .decode().
+        # Ensure we always return str regardless of installed version.
+        if isinstance(access_token, bytes):
+            access_token = access_token.decode('utf-8')
+        if isinstance(refresh_token, bytes):
+            refresh_token = refresh_token.decode('utf-8')
+        return access_token, refresh_token
 
     def renew_auth_token(self, env, data):
         """
@@ -216,6 +222,13 @@ class AuthenticateEndpoints(object):
         except jwt.ExpiredSignatureError:
             _log.error("User attempted to connect to {} with an expired signature".format(env.get('PATH_INFO')))
             return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
+
+        except jwt.PyJWTError:
+            # Catches tampered-algorithm tokens and other PyJWT 2.x decode failures
+            # (e.g. InvalidAlgorithmError, DecodeError) that are not covered by the
+            # specific subclass handlers above. Return a clean 401 rather than a 500.
+            _log.error("JWT decode error for request to {}".format(env.get('PATH_INFO')))
+            return Response('Unauthorized User', status="401 Unauthorized")
 
         if claims.get('grant_type') != 'refresh_token' or not claims.get('groups'):
             return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')

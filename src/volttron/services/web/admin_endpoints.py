@@ -111,22 +111,6 @@ class AdminEndpoints(object):
         ]
 
     def admin(self, env, data):
-        if len(self._userdict) == 0:
-            if env.get('REQUEST_METHOD') == 'POST':
-                decoded = dict((k, v if len(v) > 1 else v[0])
-                               for k, v in parse_qs(data).items())
-                username = decoded.get('username')
-                pass1 = decoded.get('password1')
-                pass2 = decoded.get('password2')
-
-                if pass1 == pass2 and pass1 is not None:
-                    _log.debug("Setting administrator password")
-                    self.add_user(username, pass1, groups=['admin', 'vui'])
-                    return Response('', status='302', headers={'Location': '/admin/login.html'})
-
-            template = template_env(env).get_template('first.html')
-            return Response(template.render(), content_type="text/html")
-
         if 'login.html' in env.get('PATH_INFO') or '/admin/' == env.get('PATH_INFO'):
             template = template_env(env).get_template('login.html')
             _log.debug("Login.html: {}".format(env.get('PATH_INFO')))

@@ -27,7 +27,6 @@ from __future__ import annotations
 import base64
 import gevent
 import gevent.pywsgi
-import jwt
 import logging
 import mimetypes
 import os
@@ -52,13 +51,13 @@ from .webapp import WebApplicationWrapper
 
 from volttron.utils.certs import Certs, CertWrapper
 from volttron.utils.context import ClientContext
-from volttron.utils.jsonrpc import INVALID_REQUEST, UNHANDLED_EXCEPTION, UNAUTHORIZED, UNAVAILABLE_PLATFORM
+from volttron.utils.jsonrpc import  UNAUTHORIZED
 
 from volttron.client.known_identities import PLATFORM_WEB
-from volttron.client.vip.agent import Agent, Core, RPC, Unreachable
+from volttron.client.vip.agent import Agent, Core, RPC
 from volttron.server.decorators import service
 from volttron.server.server_options import ServerOptions
-from volttron.utils import jsonapi, jsonrpc
+from volttron.utils import jsonapi
 from volttron.utils import set_agent_identity
 
 # must be after importing of utils which imports grequest.
@@ -73,6 +72,26 @@ class CouldNotRegister(Exception):
 
 class DuplicateEndpointError(Exception):
     pass
+
+
+def _safe_path_within_root(root_dir: str, path_info: str) -> str:
+    """Return the resolved candidate path if it is strictly within root_dir.
+
+    Raises ValueError when the resolved candidate escapes the root so callers
+    can return 403 without leaking file bytes. Uses Path.relative_to for
+    containment.
+
+    :param root_dir: canonical (pre-resolved) root as stored in registered_routes
+    :param path_info: raw PATH_INFO from the WSGI environment
+    :returns: resolved absolute path string safe to pass to _sendfile
+    :raises ValueError: if the resolved path escapes root_dir
+    """
+    root = Path(root_dir).resolve()
+    # Strip leading slashes before joining so Path('/abs') does not replace root.
+    candidate = (root / path_info.lstrip('/')).resolve()
+    # relative_to raises ValueError when candidate is outside root.
+    candidate.relative_to(root)
+    return str(candidate)
 
 
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
@@ -177,11 +196,7 @@ class PlatformWebService(Agent):
     @RPC.export
     def get_user_claims(self, bearer):
         from ..web import get_user_claim_from_bearer
-        if self.config.message_bus == 'rmq':
-            claims = get_user_claim_from_bearer(bearer,
-                                                tls_public_key=self._certs.get_cert_public_key(
-                                                    ClientContext.get_fq_identity(self.core.identity)))
-        elif self.ssl_cert is not None:
+        if self.ssl_cert is not None:
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=CertWrapper.get_cert_public_key(self.ssl_cert))
         elif self.config.secret_key is not None:
@@ -282,15 +297,33 @@ class PlatformWebService(Agent):
 
         _log.info(f'Registering web path route from {identity} regex: {regex} dir: {root_dir}')
 
+        # Canonicalize the root before any existence or containment check so symlinks, '..',
+        # and other path tricks resolve to their real location.
+        canonical_root = Path(root_dir).resolve()
+
+        # Reject the filesystem root: relative_to(Path('/')) succeeds for every path so a root of '/'
+        # degenerates the containment check into a no-op and allows serving /etc/passwd and the CURVE keystore.
+        # (data-invariants Rule 3: the boundary root itself is a candidate for the disallowed condition.)
+        if canonical_root == Path('/').resolve():
+            raise ValueError(
+                f"root_dir must not be the filesystem root: {root_dir!r}"
+            )
+
+        # Reject a root that is not a directory. A regular file as root is also a boundary violation:
+        # the serve-time join logic assumes a directory.
+        if not canonical_root.is_dir():
+            raise ValueError(
+                f"root_dir must be an existing directory: {root_dir!r}"
+            )
+
+        # TODO: Consider restricting registrable roots to an allowlist under a configured base path
+        #  or adding a configurable 'web_root_base' option that, when set, rejects any root_dir outside that base.
+
         compiled = re.compile(regex)
         self.path_routes[identity].append(compiled)
-        assert Path(root_dir).exists()
-        # Make sure we resolve the root directory so its easier to check
-        # later on.
-        root_dir = str(Path(root_dir).resolve(root_dir))
         # in order for this agent to pass against the default route we want this
         # to be before the last route which will resolve to .*
-        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', root_dir))
+        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', str(canonical_root)))
 
     @RPC.export
     def register_websocket(self, endpoint):
@@ -356,81 +389,6 @@ class PlatformWebService(Agent):
         start_response('302 Found', [('Location', '/index.html')])
         return [b'1']
 
-    # TODO: Commented, as this will fail at the RPC call. Is the discovery/allow endpoint still needed in modular?
-    # def _allow(self, environ, start_response, data=None):
-    #     _log.info('Allowing new vc instance to connect to server.')
-    #     jsondata = jsonapi.loads(data)
-    #     json_validate_request(jsondata)
-    #
-    #     assert jsondata.get('method') == 'allowvc'
-    #     assert jsondata.get('params')
-    #
-    #     params = jsondata.get('params')
-    #     if isinstance(params, list):
-    #         vcpublickey = params[0]
-    #     else:
-    #         vcpublickey = params.get('vcpublickey')
-    #
-    #     assert vcpublickey
-    #     assert len(vcpublickey) == 43
-    #
-    #     authentry = {"credentials": vcpublickey, "identity": VOLTTRON_CENTRAL}
-    #     try:
-    #         # TODO: auth_file.add no longer exists. there is a create_credentials available.
-    #         # TODO: Is this whole section VOLTTRON Central specific, and if so, should it be removed?
-    #         self.vip.rpc.call(AUTH, "auth_file.add", authentry).get()
-    #     except AuthFileEntryAlreadyExists:
-    #         pass
-    #
-    #     start_response('200 OK',
-    #                    [('Content-Type', 'application/json')])
-    #     return [jsonapi.dumpb(
-    #         json_result(jsondata['id'], "Added")
-    #     )]
-
-    # TODO: Commented, as this will fail at the encode_key(). Is the discovery endpoint still needed in modular?
-    # def _get_discovery(self, environ, start_response, data=None):
-    #     q = query.Query(self.core)
-    #
-    #     self.instance_name = q.query('instance-name').get(timeout=60)
-    #     addreses = q.query('addresses').get(timeout=60)
-    #     external_vip = None
-    #     for x in addreses:
-    #         try:
-    #             if not is_ip_private(x):
-    #                 external_vip = x
-    #                 break
-    #         except IndexError:
-    #             pass
-    #
-    #     return_dict = {}
-    #
-    #     # Only send vip and serverkey if the platform has specified
-    #     # a tcp address in the <VOLTTRON_HOME>/config or --vip-address command line argument.
-    #     if external_vip and self.serverkey:
-    #         # TODO: encode_key no longer exists. What did that do, and how to replace it?
-    #         return_dict['serverkey'] = encode_key(self.serverkey)
-    #         return_dict['vip-address'] = external_vip
-    #     elif not external_vip:
-    #         _log.warning("There was no external vip-address specified in config file or command line.")
-    #
-    #     if self.instance_name:
-    #         return_dict['instance-name'] = self.instance_name
-    #
-    #     # if self.config.message_bus == 'rmq':
-    #     #     config = RMQConfig()
-    #     #     rmq_address = None
-    #     #     if config.is_ssl:
-    #     #         rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
-    #     #                                                              vhost=config.virtual_host)
-    #     #     else:
-    #     #         rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
-    #     #                                                             vhost=config.virtual_host)
-    #     #     return_dict['rmq-address'] = rmq_address
-    #     #     return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
-    #     #         serialization.Encoding.PEM).decode("utf-8")
-    #     return Response(jsonapi.dumps(return_dict), content_type="application/json")
-
     def app_routing(self, env, start_response):
         """
         The main routing function that maps the incoming request to a response.
@@ -462,14 +420,6 @@ class PlatformWebService(Agent):
 
         if self.is_json_content(env):
             data = jsonapi.loads(data)
-
-        # Only if https available and rmq for the admin area.
-        if env['wsgi.url_scheme'] == 'https' and self.config.message_bus == 'rmq':
-            # Load the publickey that was used to sign the login message through the env
-            # parameter so agents can use it to verify the Bearer has specific
-            # jwt claims
-            passenv['WEB_PUBLIC_KEY'] = env['WEB_PUBLIC_KEY'] = self._certs.get_cert_public_key(
-                ClientContext.get_fq_identity(self.core.identity)).decode('utf-8')
 
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.
@@ -526,13 +476,23 @@ class PlatformWebService(Agent):
                 elif t == 'path':  # File service from agents on the platform.
                     if path_info == '/':
                         return self._redirect_index(env, start_response)
-                    server_path = v + path_info  # os.path.join(v, path_info)
-                    server_path = str(Path(server_path).resolve())
-                    _log.debug('Serverpath: {}'.format(server_path))
-                    # protects against relative server traversal.
-                    if not server_path.startswith(v):
+                    try:
+                        server_path = _safe_path_within_root(v, path_info)
+                    except (ValueError, OSError):
+                        # ValueError: the resolved candidate escaped root
+                        # (traversal, absolute-path, prefix-sibling, symlink).
+                        # OSError: Path.resolve() on a broken symlink or a
+                        # permission error. Both are treated as 403 (fail-closed)
+                        # rather than propagating a 500.
+                        # VO-005/H2 warning log preserved: a rejection is a
+                        # security-relevant event and must stay observable.
+                        _log.warning(
+                            'Path traversal attempt blocked: %s not under root %s',
+                            path_info, v,
+                        )
                         start_response('403 Forbidden', [('Content-Type', 'text/html')])
                         return [b'<h1>403 Forbidden</h1>']
+                    _log.debug('Serverpath: {}'.format(server_path))
                     return self._sendfile(env, start_response, server_path)
 
         start_response('404 Not Found', [('Content-Type', 'text/html')])
@@ -657,127 +617,13 @@ class PlatformWebService(Agent):
 
         return FileWrapper(open(filename, 'rb'))
 
-    def _to_jsonrpc_obj(self, jsonrpcstr):
-        """ Convert data string into a JsonRpcData named tuple.
-
-        :param object data: Either a string or a dictionary representing a json document.
-        """
-        return jsonrpc.JsonRpcData.parse(jsonrpcstr)
-
-    def jsonrpc(self, env, data):
-        """ The main entry point for ^jsonrpc data
-
-        This method will only accept rpcdata.  The first time this method
-        is called, per session, it must be using get_authorization.  That
-        will return a session token that must be included in every
-        subsequent request.  The session is tied to the ip address
-        of the caller.
-
-        :param object env: Environment dictionary for the request.
-        :param object data: The JSON-RPC 2.0 method to call.
-        :return object: An JSON-RPC 2.0 response.
-        """
-        if env['REQUEST_METHOD'].upper() != 'POST':
-            return Response(jsonapi.dumps(jsonrpc.json_error('NA', INVALID_REQUEST,
-                                      'Invalid request method, only POST allowed')), content_type="application/json")
-
-        try:
-            rpcdata = self._to_jsonrpc_obj(data)
-            _log.info('rpc method: {}'.format(rpcdata.method))
-
-            # Authenticate rpc call
-            if 'authentication' in rpcdata.params:
-                if self.jsonrpc_verify_and_dispatch(rpcdata.params['authentication']):
-                    del rpcdata.params['authentication']
-                else:
-                    return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                           "Invalid username/password specified.")),
-                                        content_type="application/json")
-            else:
-                return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                                     "Authentication parameter missing.")),
-                                    content_type="application/json")
-
-            if not rpcdata.method:
-                return Response(jsonapi.dumps(jsonrpc.json_error(
-                    'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
-            else:
-                if rpcdata.params:
-                    result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method, **rpcdata.params).get()
-                else:
-                    result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method).get()
-
-        except AssertionError:
-            return Response(jsonapi.dumps(jsonrpc.json_error(
-                'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
-        except Unreachable:
-            return Response(
-                jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAVAILABLE_PLATFORM,
-                                                 "Couldn't reach platform with method {} params: {}".format(
-                                                     rpcdata.method, rpcdata.params))),
-                content_type="application/json")
-        except Exception as e:
-
-            return Response(jsonapi.dumps(jsonrpc.json_error('NA', UNHANDLED_EXCEPTION, e)),
-                                content_type="application/json")
-
-        return Response(jsonapi.dumps(self._get_jsonrpc_response(rpcdata.id, result_or_error)),
-                            content_type="application/json")
-
-    def _get_jsonrpc_response(self, id, result_or_error):
-        """ Wrap the response in either a json-rpc error or result.
-
-        :param id:
-        :param result_or_error:
-        :return:
-        """
-        if isinstance(result_or_error, dict):
-            if 'jsonrpc' in result_or_error:
-                return result_or_error
-
-        if result_or_error is not None and isinstance(result_or_error, dict):
-            if 'error' in result_or_error:
-                error = result_or_error['error']
-                _log.debug("RPC RESPONSE ERROR: {}".format(error))
-                return jsonrpc.json_error(id, error['code'], error['message'])
-        return jsonrpc.json_result(id, result_or_error)
-
-    def jsonrpc_verify_and_dispatch(self, authentication):
-        """ Verify that the user is an admin
-
-        :param authentication: authentication generated by successful authentication
-        :return: Boolean
-        """
-        from ..web import NotAuthorized
-        try:
-            claims = self.get_user_claims(authentication)
-        except NotAuthorized:
-            _log.error("Unauthorized user attempted to connect to platform.")
-            return False
-        except jwt.ExpiredSignatureError:
-            _log.error("User attempted to connect with an expired signature.")
-            return False
-
-        return True
-
-
-
     @Core.receiver('onstart')
     def startupagent(self, sender, **kwargs):
         ssl_key = self.config.ssl_key
         ssl_cert = self.config.ssl_cert
         rpc_caller = self.vip.rpc
         if self.config.bind_address.scheme == 'https':
-            # Admin interface is only available to rmq at present.
-            if self.config.message_bus == 'rmq':
-                self._admin_endpoints = AdminEndpoints(rmq_mgmt=self.core.rmq_mgmt,
-                                                       ssl_public_key=self._certs.get_cert_public_key(
-                                                           ClientContext.get_fq_identity(self.core.identity)),
-                                                       rpc_caller=rpc_caller)
             if ssl_key is None or ssl_cert is None:
-                # Because the  platform.web service certificate is a client to rabbitmq we
-                # can't use it directly therefore we use the -server on the file to specify
-                # the server based file.
                 base_filename = ClientContext.get_fq_identity(self.core.identity) + "-server"
                 ssl_cert = self._certs.cert_file(base_filename)
                 ssl_key = self._certs.private_key_file(base_filename)
@@ -791,18 +637,6 @@ class PlatformWebService(Agent):
         else:
             self._admin_endpoints = AdminEndpoints(rpc_caller=rpc_caller)
         _log.info(f'Starting web server binding to {self.config.bind_address}.')
-        # Handle the platform.web routes here.
-        #self.registeredroutes.append((re.compile('^/discovery/$'), 'callable', self._get_discovery))
-        #self.registeredroutes.append((re.compile('^/discovery/allow$'), 'callable', self._allow))
-        self.registered_routes.append((re.compile(r'/gs'), 'callable', self.jsonrpc))
-        # these routes are only available for rmq based message bus
-        # at present.
-        if self.config.message_bus == 'rmq':
-            # We need reference to the object so we can change the behavior of
-            # whether or not to have auto certs be created or not.
-            self._csr_endpoints = CSREndpoints(self.core)
-            for rt in self._csr_endpoints.get_routes():
-                self.registered_routes.append(rt)
 
         # Register the admin endpoints regardless of whether there is an ssl context
         # or not.
@@ -815,12 +649,8 @@ class PlatformWebService(Agent):
 
         # Allow authentication endpoint from any https connection
         if self.config.bind_address.scheme == 'https':
-            if self.config.message_bus == 'rmq':
-                ssl_private_key = self._certs.get_pk_bytes(ClientContext.get_fq_identity(self.core.identity))
-                ssl_public_key = self._certs.get_cert_public_key(ClientContext.get_fq_identity(self.core.identity))
-            else:
-                ssl_private_key = CertWrapper.get_private_key(ssl_key)
-                ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
+            ssl_private_key = CertWrapper.get_private_key(ssl_key)
+            ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
             for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
                 self.registered_routes.append(rt)
         else:
@@ -841,21 +671,6 @@ class PlatformWebService(Agent):
         else:
             svr = WSGIServer(((self.config.bind_address.host), port), self.appContainer)
         self._server_greenlet = gevent.spawn(svr.serve_forever)
-
-    def _authenticate_route(self, env, start_response, data):
-        scheme = env.get('wsgi.url_scheme')
-
-        if scheme != 'https':
-            _log.warning("Authentication should be through https")
-            start_response("401 Unauthorized", [('Content-Type', 'text/html')])
-            return "<html><body><h1>401 Unauthorized</h1></body></html>"
-
-        from pprint import pprint
-        pprint(env)
-
-        import jwt
-
-        jwt.encode()
 
     @Core.receiver('onstop')
     def onstop(self, sender, **kwargs):
