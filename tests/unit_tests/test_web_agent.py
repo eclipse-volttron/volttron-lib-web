@@ -42,8 +42,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from volttron.client.known_identities import AUTH
+from werkzeug import Response
+
 from volttron.services.web.platform_web_service import (PlatformWebService, WebServiceConfig, HiddenPathError,
-                                                        _safe_path_within_root)
+                                                        ReservedRouteError, PEER_ENV_KEYS, _safe_path_within_root)
+from volttron.services.web.webapp import WebApplicationWrapper
 from volttron.types.auth import AuthException
 from volttron.utils import jsonrpc
 
@@ -452,6 +455,112 @@ class TestWebRootDirConfig:
         (vh / "web-root").mkdir(parents=True)
         config = WebServiceConfig(volttron_home=vh, web_root_dir=str(vh / "web-root"), **self.KW)
         assert config.web_root_dir == (vh / "web-root").resolve()
+
+
+@pytest.fixture()
+def pws_with_container(mock_platform_web_service):
+    pws = mock_platform_web_service
+    pws.appContainer = WebApplicationWrapper(pws, '127.0.0.1', 8080)
+    return pws
+
+
+class TestReservedRoutes:
+    """Peer routes are consulted before the platform's own routes, so peers must not be able to claim them."""
+
+    @pytest.mark.parametrize("endpoint", ['/authenticate', '/admin', '/admin/', '/admin/login.html',
+                                          '/vui', '/vui/platforms', '/admin.html'])
+    def test_register_endpoint_rejects_reserved_paths(self, mock_platform_web_service, endpoint):
+        pws = mock_platform_web_service
+        with pytest.raises(ReservedRouteError):
+            pws.register_endpoint(endpoint, 'jsonrpc')
+        assert pws.endpoints == {}
+
+    def test_register_endpoint_allows_other_paths(self, mock_platform_web_service):
+        pws = mock_platform_web_service
+        pws.register_endpoint('/administrative/notes', 'jsonrpc')
+        pws.register_endpoint('/myapp/jsonrpc', 'raw')
+        assert set(pws.endpoints) == {'/administrative/notes', '/myapp/jsonrpc'}
+
+    @pytest.mark.parametrize("regex", [r'^/vui.*', r'/vui/platforms/.*', r'^/admin.*', r'^/authenticate$',
+                                       r'/.*', r'^/.*$', r'.*', r'^/(vui|other)/.*'])
+    def test_register_agent_route_rejects_patterns_covering_reserved_paths(self, mock_platform_web_service, regex):
+        pws = mock_platform_web_service
+        with pytest.raises(ReservedRouteError):
+            pws.register_agent_route(regex, 'callback')
+        assert pws.registered_routes == []
+        assert dict(pws.peer_routes) == {}
+
+    def test_platform_routes_stay_ahead_of_peer_routes(self, mock_platform_web_service, web_root):
+        """Even a pattern that slips past the regex check cannot shadow a built-in route, because peer routes are
+        inserted after the platform's callable routes and before static path routes."""
+        pws = mock_platform_web_service
+        builtin = MagicMock(return_value=Response('platform', 200))
+        pws.registered_routes.append((re.compile('^/vui.*'), 'callable', builtin))
+        pws.registered_routes.append((re.compile('^/.*$'), 'path', str(web_root["root"])))
+        set_rpc_caller(pws, peer="peer-agent")
+        pws.register_agent_route(r'^/(?:v)ui/platforms.*', 'callback')  # evades the pattern heuristic
+        pws.register_agent_route(r'^/myapp/.*', 'callback')
+
+        assert [r[1] for r in pws.registered_routes] == ['callable', 'peer_route', 'peer_route', 'path']
+        with patch.object(pws.vip.rpc, 'call') as call:
+            status, body = _route(pws, '/vui/platforms')
+        assert "200 OK" in status and body == 'platform'
+        call.assert_not_called()
+        builtin.assert_called_once()
+
+    def test_register_agent_route_allows_other_patterns(self, mock_platform_web_service):
+        pws = mock_platform_web_service
+        pws.register_agent_route(r'^/myapp/.*', 'callback')
+        pws.register_agent_route(r'^/administrative/.*', 'callback')
+        assert len(pws.registered_routes) == 2
+        assert all(r[1] == 'peer_route' for r in pws.registered_routes)
+
+    @pytest.mark.parametrize("endpoint", ['/authenticate', '/admin/ws', '/vui/platforms/x/pubsub/topic'])
+    def test_register_websocket_rejects_reserved_paths(self, pws_with_container, endpoint):
+        pws = pws_with_container
+        with pytest.raises(ReservedRouteError):
+            pws.register_websocket(endpoint)
+        assert pws.appContainer._wsregistry == {}
+
+
+class TestPeerRouteEnvironment:
+    def test_credentials_are_not_forwarded_to_peers(self, mock_platform_web_service):
+        pws = mock_platform_web_service
+        set_rpc_caller(pws, peer="peer-agent")
+        pws.register_agent_route(r'^/myapp/.*', 'route_callback')
+
+        result = MagicMock()
+        result.get.return_value = {'ok': True}
+        with patch.object(pws.vip.rpc, 'call', return_value=result) as call:
+            start_response = MagicMock()
+            env = get_test_web_env('/myapp/page', HTTP_AUTHORIZATION='Bearer secret-token',
+                                   HTTP_COOKIE='Bearer=cookie-token; other=1')
+            body = b"".join(pws.app_routing(env, start_response))
+
+        assert "200 OK" in start_response.call_args[0][0]
+        assert b'"ok": true' in body
+        call.assert_called_once()
+        peer, fn, passenv, data = call.call_args[0]
+        assert (peer, fn) == ('peer-agent', 'route_callback')
+        assert 'HTTP_AUTHORIZATION' not in passenv
+        assert 'HTTP_COOKIE' not in passenv
+        assert 'secret-token' not in str(passenv) and 'cookie-token' not in str(passenv)
+        assert passenv['PATH_INFO'] == '/myapp/page'
+        assert set(passenv) <= set(PEER_ENV_KEYS)
+
+    def test_registered_endpoint_does_not_receive_credentials(self, mock_platform_web_service):
+        pws = mock_platform_web_service
+        set_rpc_caller(pws, peer="peer-agent")
+        pws.register_endpoint('/myapp/jsonrpc', 'jsonrpc')
+
+        result = MagicMock()
+        result.get.return_value = {'result': 1}
+        with patch.object(pws.vip.rpc, 'call', return_value=result) as call:
+            env = get_test_web_env('/myapp/jsonrpc', HTTP_AUTHORIZATION='Bearer secret-token', HTTP_COOKIE='a=b')
+            pws.app_routing(env, MagicMock())
+
+        passenv = call.call_args[0][2]
+        assert 'HTTP_AUTHORIZATION' not in passenv and 'HTTP_COOKIE' not in passenv
 
 
 class TestProtectedRpcEnforcement:

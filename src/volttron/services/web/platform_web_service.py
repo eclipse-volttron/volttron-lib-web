@@ -75,6 +75,55 @@ class DuplicateEndpointError(Exception):
     pass
 
 
+class ReservedRouteError(ValueError):
+    """Raised when a peer tries to register a route that would shadow a platform-owned path."""
+    pass
+
+
+# Paths owned by the platform web service itself. Peer registrations that would match any of these are refused,
+# because peer routes are consulted before the built-in routes and the forwarded request would otherwise let an
+# arbitrary agent impersonate the login, administration or REST API endpoints.
+RESERVED_ROUTE_PREFIXES = ('/authenticate', '/admin', '/vui')
+
+# WSGI environment keys forwarded to peers for 'peer_route' and registered endpoints. Credentials
+# (HTTP_AUTHORIZATION, HTTP_COOKIE) are deliberately excluded: the platform validates web users itself and a peer
+# must never receive another user's bearer token or session cookie.
+PEER_ENV_KEYS = ('HTTP_USER_AGENT', 'PATH_INFO', 'QUERY_STRING', 'REQUEST_METHOD', 'SERVER_PROTOCOL', 'REMOTE_ADDR',
+                 'HTTP_ACCEPT_ENCODING', 'CONTENT_TYPE', 'SERVER_NAME', 'wsgi.url_scheme', 'HTTP_HOST')
+
+
+def _path_is_reserved(path: str) -> bool:
+    return any(path == prefix or path.startswith(prefix + '/') or path.startswith(prefix + '.')
+               for prefix in RESERVED_ROUTE_PREFIXES)
+
+
+def _regex_covers_reserved(compiled: re.Pattern) -> bool:
+    """True if the route regex would match a reserved path or something beneath it.
+
+    Two checks: probe paths under each reserved prefix, and inspect the literal text the pattern starts with
+    (e.g. '^/vui/platforms/.*' never matches the probes but plainly targets a reserved subtree).
+    """
+    for prefix in RESERVED_ROUTE_PREFIXES:
+        for probe in (prefix, prefix + '/', prefix + '/x', prefix + '/x/y'):
+            if compiled.match(probe):
+                return True
+    literal = re.match(r'[^.^$*+?{}\\[\]|()]*', compiled.pattern.lstrip('^')).group()
+    return _path_is_reserved(literal.rstrip('/')) or any(literal.startswith(p + '/') for p in RESERVED_ROUTE_PREFIXES)
+
+
+def _insert_peer_route(routes: list, route: tuple) -> None:
+    """Insert a peer route after the platform's own callable routes but before any static path routes.
+
+    The built-in routes (/admin, /vui, /authenticate) must always be matched first, whatever a peer registers;
+    the catch-all static route must always be matched last.
+    """
+    index = 0
+    for i, (_, route_type, _) in enumerate(routes):
+        if route_type == 'callable':
+            index = i + 1
+    routes.insert(index, route)
+
+
 class HiddenPathError(Exception):
     """The requested file is inside the root but a path segment is hidden (begins with a dot)."""
 
@@ -307,6 +356,10 @@ class PlatformWebService(Agent):
         _log.debug('Registering route with endpoint: {}'.format(endpoint))
         _log.debug('Route is associated with peer: {}'.format(identity))
 
+        if _path_is_reserved(endpoint):
+            _log.warning(f"Peer {identity} attempted to register reserved endpoint {endpoint}.")
+            raise ReservedRouteError(f"Endpoint {endpoint} is reserved for the platform web service.")
+
         if endpoint in self.endpoints:
             _log.error("Attempting to register an already existing endpoint.")
             _log.error("Ignoring registration.")
@@ -332,8 +385,11 @@ class PlatformWebService(Agent):
         # TODO: inspect peer for function
 
         compiled = re.compile(regex)
+        if _regex_covers_reserved(compiled):
+            _log.warning(f"Peer {identity} attempted to register agent route {regex} covering a reserved path.")
+            raise ReservedRouteError(f"Route {regex} would shadow a path reserved for the platform web service.")
         self.peer_routes[identity].append(compiled)
-        self.registered_routes.insert(0, (compiled, 'peer_route', (identity, fn)))
+        _insert_peer_route(self.registered_routes, (compiled, 'peer_route', (identity, fn)))
 
     @RPC.export
     def unregister_all_agent_routes(self):
@@ -436,6 +492,9 @@ class PlatformWebService(Agent):
 
         _log.debug('Caller identity: {}'.format(identity))
         _log.debug('REGISTERING ENDPOINT: {}'.format(endpoint))
+        if _path_is_reserved(endpoint):
+            _log.warning(f"Peer {identity} attempted to register reserved websocket endpoint {endpoint}.")
+            raise ReservedRouteError(f"Endpoint {endpoint} is reserved for the platform web service.")
         if self.appContainer:
             self.appContainer.create_ws_endpoint(endpoint, identity)
         else:
@@ -506,15 +565,9 @@ class PlatformWebService(Agent):
             path_info = path_info[path_info.index('/', len('/http://')):]
 
         # only expose a partial list of the env variables to the registered
-        # agents.
-        envlist = ['HTTP_USER_AGENT', 'PATH_INFO', 'QUERY_STRING',
-                   'REQUEST_METHOD', 'SERVER_PROTOCOL', 'REMOTE_ADDR',
-                   'HTTP_ACCEPT_ENCODING', 'HTTP_COOKIE', 'CONTENT_TYPE',
-                   'HTTP_AUTHORIZATION', 'SERVER_NAME', 'wsgi.url_scheme',
-                   'HTTP_HOST']
+        # agents (never credentials, see PEER_ENV_KEYS).
         data = env['wsgi.input'].read().decode('utf-8')
-        passenv = dict(
-            (envlist[i], env[envlist[i]]) for i in range(0, len(envlist)) if envlist[i] in env.keys())
+        passenv = {k: env[k] for k in PEER_ENV_KEYS if k in env}
 
         _log.debug('path_info is: {}'.format(path_info))
         # Get the peer responsible for dealing with the endpoint.  If there
@@ -528,9 +581,7 @@ class PlatformWebService(Agent):
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.
         if peer:
-            _log.debug('Calling peer {} back with env={} data={}'.format(
-                peer, passenv, data
-            ))
+            _log.debug('Calling peer {} back for {}'.format(peer, path_info))
             res = self.vip.rpc.call(peer, 'route.callback',
                                     passenv, data).get(timeout=60)
 
