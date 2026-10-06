@@ -27,7 +27,6 @@ from __future__ import annotations
 import base64
 import gevent
 import gevent.pywsgi
-import jwt
 import logging
 import mimetypes
 import os
@@ -38,13 +37,14 @@ from collections import defaultdict
 from gevent import Greenlet
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pathlib import Path
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator, SecretStr
 from werkzeug import Response
 
 from ws4py.server.geventserver import WSGIServer
 
 from .admin_endpoints import AdminEndpoints
 from .vui_endpoints import VUIEndpoints
+from .rpc_proxy_policy import RpcProxyPolicy
 from .authenticate_endpoint import AuthenticateEndpoints
 from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
@@ -52,13 +52,13 @@ from .webapp import WebApplicationWrapper
 
 from volttron.utils.certs import Certs, CertWrapper
 from volttron.utils.context import ClientContext
-from volttron.utils.jsonrpc import INVALID_REQUEST, UNHANDLED_EXCEPTION, UNAUTHORIZED, UNAVAILABLE_PLATFORM
+from volttron.utils.jsonrpc import  UNAUTHORIZED
 
 from volttron.client.known_identities import PLATFORM_WEB
-from volttron.client.vip.agent import Agent, Core, RPC, Unreachable
+from volttron.client.vip.agent import Agent, Core, RPC
 from volttron.server.decorators import service
 from volttron.server.server_options import ServerOptions
-from volttron.utils import jsonapi, jsonrpc
+from volttron.utils import jsonapi
 from volttron.utils import set_agent_identity
 
 # must be after importing of utils which imports grequest.
@@ -75,6 +75,88 @@ class DuplicateEndpointError(Exception):
     pass
 
 
+class ReservedRouteError(ValueError):
+    """Raised when a peer tries to register a route that would shadow a platform-owned path."""
+    pass
+
+
+# Paths owned by the platform web service itself. Peer registrations that would match any of these are refused,
+# because peer routes are consulted before the built-in routes and the forwarded request would otherwise let an
+# arbitrary agent impersonate the login, administration or REST API endpoints.
+RESERVED_ROUTE_PREFIXES = ('/authenticate', '/admin', '/vui')
+
+# WSGI environment keys forwarded to peers for 'peer_route' and registered endpoints. Credentials
+# (HTTP_AUTHORIZATION, HTTP_COOKIE) are deliberately excluded: the platform validates web users itself and a peer
+# must never receive another user's bearer token or session cookie.
+PEER_ENV_KEYS = ('HTTP_USER_AGENT', 'PATH_INFO', 'QUERY_STRING', 'REQUEST_METHOD', 'SERVER_PROTOCOL', 'REMOTE_ADDR',
+                 'HTTP_ACCEPT_ENCODING', 'CONTENT_TYPE', 'SERVER_NAME', 'wsgi.url_scheme', 'HTTP_HOST')
+
+
+def _path_is_reserved(path: str) -> bool:
+    return any(path == prefix or path.startswith(prefix + '/') or path.startswith(prefix + '.')
+               for prefix in RESERVED_ROUTE_PREFIXES)
+
+
+def _regex_covers_reserved(compiled: re.Pattern) -> bool:
+    """True if the route regex would match a reserved path or something beneath it.
+
+    Two checks: probe paths under each reserved prefix, and inspect the literal text the pattern starts with
+    (e.g. '^/vui/platforms/.*' never matches the probes but plainly targets a reserved subtree).
+    """
+    for prefix in RESERVED_ROUTE_PREFIXES:
+        for probe in (prefix, prefix + '/', prefix + '/x', prefix + '/x/y'):
+            if compiled.match(probe):
+                return True
+    literal = re.match(r'[^.^$*+?{}\\[\]|()]*', compiled.pattern.lstrip('^')).group()
+    return _path_is_reserved(literal.rstrip('/')) or any(literal.startswith(p + '/') for p in RESERVED_ROUTE_PREFIXES)
+
+
+def _insert_peer_route(routes: list, route: tuple) -> None:
+    """Insert a peer route after the platform's own callable routes but before any static path routes.
+
+    The built-in routes (/admin, /vui, /authenticate) must always be matched first, whatever a peer registers;
+    the catch-all static route must always be matched last.
+    """
+    index = 0
+    for i, (_, route_type, _) in enumerate(routes):
+        if route_type == 'callable':
+            index = i + 1
+    routes.insert(index, route)
+
+
+class HiddenPathError(Exception):
+    """The requested file is inside the root but a path segment is hidden (begins with a dot)."""
+
+
+def _safe_path_within_root(root_dir: str, path_info: str) -> str:
+    """Return the resolved candidate path if it is strictly within root_dir and not hidden.
+
+    Raises ValueError when the resolved candidate escapes the root so callers
+    can return 403 without leaking file bytes. Uses Path.relative_to for
+    containment. Raises HiddenPathError when any segment of the in-root path
+    begins with a dot (``.git``, ``.env``, ``.htpasswd``); callers answer 404 so
+    hidden files are indistinguishable from absent ones.
+
+    :param root_dir: canonical (pre-resolved) root as stored in registered_routes
+    :param path_info: raw PATH_INFO from the WSGI environment
+    :returns: resolved absolute path string safe to pass to _sendfile
+    :raises ValueError: if the resolved path escapes root_dir
+    :raises HiddenPathError: if the in-root path contains a hidden segment
+    """
+    root = Path(root_dir).resolve()
+    # Strip leading slashes before joining so Path('/abs') does not replace root.
+    candidate = (root / path_info.lstrip('/')).resolve()
+    # relative_to raises ValueError when candidate is outside root.
+    relative = candidate.relative_to(root)
+    if any(part.startswith('.') for part in relative.parts):
+        raise HiddenPathError(str(relative))
+    return str(candidate)
+
+
+# Name of the directory inside an agent's data directory whose contents it may publish through the web service.
+AGENT_WEB_ROOT_DIRNAME = 'web-root'
+
+
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
 __TEMPLATE_DIR__ = os.path.join(__PACKAGE_DIR__, "templates")
 __STATIC_DIR__ = os.path.join(__PACKAGE_DIR__, "static")
@@ -89,12 +171,54 @@ tplenv = Environment(
 )
 
 class WebServiceConfig(BaseModel):
-    model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True)
+    model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True,
+                              arbitrary_types_allowed=True)
     bind_address: AnyHttpUrl = Field(validation_alias='bind_web_address')
     message_bus: str = Field(alias='messagebus')
     secret_key: SecretStr | None = Field(default=None, alias='web_secret_key')
     ssl_key: str | None = Field(default=None, alias='web_ssl_key')
     ssl_cert: str | None = Field(default=None, alias='web_ssl_cert')
+    # Which RPC calls the VUI /rpc proxy may forward. Configured as the multi-line "rpc-allow-list" option of the
+    # [web] section; see rpc_proxy_policy.py for the syntax. Empty by default, which closes the proxy.
+    rpc_allow_list: RpcProxyPolicy = Field(default_factory=RpcProxyPolicy)
+    # Needed to validate web_root_dir (declared first so its value is available to that validator); supplied by
+    # the service from ServerOptions.
+    volttron_home: Path = Field(default_factory=lambda: Path(ClientContext.get_volttron_home()))
+    # Optional directory holding one web-root subdirectory per agent identity. When set, agents publish static
+    # files from "<web_root_dir>/<identity>" instead of "<VOLTTRON_HOME>/agents/<identity>/data/web-root", so
+    # their web files survive a reinstall of the agent. Configured as "web-root-dir" in the [web] section.
+    web_root_dir: Path | None = Field(default=None)
+
+    @field_validator('web_root_dir', mode='after')
+    @classmethod
+    def validate_web_root_dir(cls, web_root_dir: Path | None, info) -> Path | None:
+        """Canonicalize web_root_dir and refuse locations that would expose the platform's own files.
+
+        The directory must already exist so a typo fails loudly at startup instead of silently refusing every
+        agent registration. It must not be the filesystem root, and it must not be VOLTTRON_HOME or any ancestor
+        of it: per-agent subdirectories of such a root could be made to coincide with the keystore, credential
+        store or configuration directories.
+        """
+        if web_root_dir is None:
+            return None
+        resolved = Path(web_root_dir).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f'Parameter "web_root_dir" must be an existing directory: {web_root_dir!s}')
+        if resolved == Path(resolved.anchor):
+            raise ValueError('Parameter "web_root_dir" must not be the filesystem root.')
+        volttron_home = Path(info.data.get('volttron_home') or ClientContext.get_volttron_home()).expanduser().resolve()
+        if resolved == volttron_home or resolved in volttron_home.parents:
+            raise ValueError(f'Parameter "web_root_dir" must not be VOLTTRON_HOME or a directory containing it: '
+                             f'{web_root_dir!s}')
+        return resolved
+
+    @field_validator('rpc_allow_list', mode='before')
+    @classmethod
+    def parse_rpc_allow_list(cls, value) -> RpcProxyPolicy:
+        if isinstance(value, RpcProxyPolicy):
+            return value
+        # RpcAllowListError is a ValueError, so pydantic reports a bad entry as a normal validation error.
+        return RpcProxyPolicy(value)
 
     @model_validator(mode='after')
     def validate_auth_requirements(self) -> WebServiceConfig:
@@ -120,7 +244,8 @@ class PlatformWebService(Agent):
         Initialize the configuration of the base web service integration within the platform.
 
         """
-        self.config = WebServiceConfig(message_bus=opts.messagebus, **opts.services.get('web', {}))
+        self.config = WebServiceConfig(message_bus=opts.messagebus, volttron_home=opts.volttron_home,
+                                       **opts.services.get('web', {}))
         with set_agent_identity(self.Meta.identity):
             super().__init__(address=opts.service_address, **kwargs)
 
@@ -155,6 +280,13 @@ class PlatformWebService(Agent):
         """
         return self.config.ssl_key
 
+    @property
+    def rpc_proxy_policy(self) -> RpcProxyPolicy:
+        """
+        Policy deciding which RPC calls the VUI /rpc proxy may forward.
+        """
+        return self.config.rpc_allow_list
+
     # pylint: disable=unused-argument
     @Core.receiver('onsetup')
     def onsetup(self, sender, **kwargs):
@@ -177,11 +309,7 @@ class PlatformWebService(Agent):
     @RPC.export
     def get_user_claims(self, bearer):
         from ..web import get_user_claim_from_bearer
-        if self.config.message_bus == 'rmq':
-            claims = get_user_claim_from_bearer(bearer,
-                                                tls_public_key=self._certs.get_cert_public_key(
-                                                    ClientContext.get_fq_identity(self.core.identity)))
-        elif self.ssl_cert is not None:
+        if self.ssl_cert is not None:
             claims = get_user_claim_from_bearer(bearer,
                                                 tls_public_key=CertWrapper.get_cert_public_key(self.ssl_cert))
         elif self.config.secret_key is not None:
@@ -228,6 +356,10 @@ class PlatformWebService(Agent):
         _log.debug('Registering route with endpoint: {}'.format(endpoint))
         _log.debug('Route is associated with peer: {}'.format(identity))
 
+        if _path_is_reserved(endpoint):
+            _log.warning(f"Peer {identity} attempted to register reserved endpoint {endpoint}.")
+            raise ReservedRouteError(f"Endpoint {endpoint} is reserved for the platform web service.")
+
         if endpoint in self.endpoints:
             _log.error("Attempting to register an already existing endpoint.")
             _log.error("Ignoring registration.")
@@ -253,8 +385,11 @@ class PlatformWebService(Agent):
         # TODO: inspect peer for function
 
         compiled = re.compile(regex)
+        if _regex_covers_reserved(compiled):
+            _log.warning(f"Peer {identity} attempted to register agent route {regex} covering a reserved path.")
+            raise ReservedRouteError(f"Route {regex} would shadow a path reserved for the platform web service.")
         self.peer_routes[identity].append(compiled)
-        self.registered_routes.insert(0, (compiled, 'peer_route', (identity, fn)))
+        _insert_peer_route(self.registered_routes, (compiled, 'peer_route', (identity, fn)))
 
     @RPC.export
     def unregister_all_agent_routes(self):
@@ -275,22 +410,80 @@ class PlatformWebService(Agent):
         endpoints = {i:endpoints[i] for i in endpoints if endpoints[i][0] != identity}
         self.endpoints = endpoints
 
+    def agent_web_root(self, identity: str) -> Path:
+        """Return the one directory from which the agent with this identity may publish static files.
+
+        With ``web-root-dir`` configured this is ``<web_root_dir>/<identity>``; otherwise it is
+        ``<VOLTTRON_HOME>/agents/<identity>/data/web-root``. The directory is not created here and need not exist
+        until the agent registers it.
+
+        :raises ValueError: if the identity is not a single clean path component, so it cannot be used to name
+            a directory without the risk of selecting a different one.
+        """
+        if not identity or Path(identity).name != identity or identity in ('.', '..'):
+            raise ValueError(f'Cannot derive a web root for identity {identity!r}.')
+        if self.config.web_root_dir is not None:
+            parent = self.config.web_root_dir
+            web_root = parent / identity
+        else:
+            parent = Path(self.config.volttron_home) / 'agents' / identity / 'data'
+            web_root = parent / AGENT_WEB_ROOT_DIRNAME
+        resolved = web_root.resolve()
+        if resolved.parent != parent.resolve():
+            # A symlink or similar has moved the allotted directory somewhere else. Refuse rather than follow.
+            raise ValueError(f'Web root for identity {identity!r} does not resolve to a child of {parent}.')
+        return resolved
+
     @RPC.export
-    def register_path_route(self, regex, root_dir):
+    def get_web_root(self) -> str:
+        """Return the directory from which the calling agent may publish static files via register_path_route.
+
+        The directory is not created. Place files in it, then call register_path_route with the URL pattern they
+        should be served under.
+        """
+        identity = self.vip.rpc.context.vip_message.peer
+        return str(self.agent_web_root(identity))
+
+    @RPC.export
+    def register_path_route(self, regex, root_dir=None):
+        """Serve the calling agent's web root for requests matching regex.
+
+        Static files are always served from the agent's allotted web root (see get_web_root); the agent cannot
+        choose another directory. ``root_dir`` is accepted for compatibility with the client subsystem and, when
+        given, must name that same directory. Returns the directory that was registered.
+        """
         # Get calling identity from whom the request came from
         identity = self.vip.rpc.context.vip_message.peer
 
         _log.info(f'Registering web path route from {identity} regex: {regex} dir: {root_dir}')
 
+        try:
+            web_root = self.agent_web_root(identity)
+        except ValueError as e:
+            _log.warning(f'Refused web path route from {identity}: {e}')
+            raise
+
+        if root_dir is not None and Path(root_dir).expanduser().resolve() != web_root:
+            _log.warning(f'Refused web path route from {identity}: {root_dir!r} is not its web root {web_root}.')
+            raise ValueError(f"root_dir must be the agent's web root {web_root} (or be omitted): {root_dir!r}")
+
+        # Defense in depth: the web root is derived from a per-identity path and can never be the filesystem
+        # root, but the serve-time containment check degenerates to a no-op for '/' so refuse it explicitly.
+        if web_root == Path(web_root.anchor):
+            raise ValueError(f"root_dir must not be the filesystem root: {root_dir!r}")
+
+        if not web_root.is_dir():
+            _log.warning(f'Refused web path route from {identity}: web root {web_root} is not an existing directory.')
+            raise ValueError(f"root_dir must be an existing directory: {web_root}")
+
+        canonical_root = web_root
+
         compiled = re.compile(regex)
         self.path_routes[identity].append(compiled)
-        assert Path(root_dir).exists()
-        # Make sure we resolve the root directory so its easier to check
-        # later on.
-        root_dir = str(Path(root_dir).resolve(root_dir))
         # in order for this agent to pass against the default route we want this
         # to be before the last route which will resolve to .*
-        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', root_dir))
+        self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', str(canonical_root)))
+        return str(canonical_root)
 
     @RPC.export
     def register_websocket(self, endpoint):
@@ -299,6 +492,9 @@ class PlatformWebService(Agent):
 
         _log.debug('Caller identity: {}'.format(identity))
         _log.debug('REGISTERING ENDPOINT: {}'.format(endpoint))
+        if _path_is_reserved(endpoint):
+            _log.warning(f"Peer {identity} attempted to register reserved websocket endpoint {endpoint}.")
+            raise ReservedRouteError(f"Endpoint {endpoint} is reserved for the platform web service.")
         if self.appContainer:
             self.appContainer.create_ws_endpoint(endpoint, identity)
         else:
@@ -356,81 +552,6 @@ class PlatformWebService(Agent):
         start_response('302 Found', [('Location', '/index.html')])
         return [b'1']
 
-    # TODO: Commented, as this will fail at the RPC call. Is the discovery/allow endpoint still needed in modular?
-    # def _allow(self, environ, start_response, data=None):
-    #     _log.info('Allowing new vc instance to connect to server.')
-    #     jsondata = jsonapi.loads(data)
-    #     json_validate_request(jsondata)
-    #
-    #     assert jsondata.get('method') == 'allowvc'
-    #     assert jsondata.get('params')
-    #
-    #     params = jsondata.get('params')
-    #     if isinstance(params, list):
-    #         vcpublickey = params[0]
-    #     else:
-    #         vcpublickey = params.get('vcpublickey')
-    #
-    #     assert vcpublickey
-    #     assert len(vcpublickey) == 43
-    #
-    #     authentry = {"credentials": vcpublickey, "identity": VOLTTRON_CENTRAL}
-    #     try:
-    #         # TODO: auth_file.add no longer exists. there is a create_credentials available.
-    #         # TODO: Is this whole section VOLTTRON Central specific, and if so, should it be removed?
-    #         self.vip.rpc.call(AUTH, "auth_file.add", authentry).get()
-    #     except AuthFileEntryAlreadyExists:
-    #         pass
-    #
-    #     start_response('200 OK',
-    #                    [('Content-Type', 'application/json')])
-    #     return [jsonapi.dumpb(
-    #         json_result(jsondata['id'], "Added")
-    #     )]
-
-    # TODO: Commented, as this will fail at the encode_key(). Is the discovery endpoint still needed in modular?
-    # def _get_discovery(self, environ, start_response, data=None):
-    #     q = query.Query(self.core)
-    #
-    #     self.instance_name = q.query('instance-name').get(timeout=60)
-    #     addreses = q.query('addresses').get(timeout=60)
-    #     external_vip = None
-    #     for x in addreses:
-    #         try:
-    #             if not is_ip_private(x):
-    #                 external_vip = x
-    #                 break
-    #         except IndexError:
-    #             pass
-    #
-    #     return_dict = {}
-    #
-    #     # Only send vip and serverkey if the platform has specified
-    #     # a tcp address in the <VOLTTRON_HOME>/config or --vip-address command line argument.
-    #     if external_vip and self.serverkey:
-    #         # TODO: encode_key no longer exists. What did that do, and how to replace it?
-    #         return_dict['serverkey'] = encode_key(self.serverkey)
-    #         return_dict['vip-address'] = external_vip
-    #     elif not external_vip:
-    #         _log.warning("There was no external vip-address specified in config file or command line.")
-    #
-    #     if self.instance_name:
-    #         return_dict['instance-name'] = self.instance_name
-    #
-    #     # if self.config.message_bus == 'rmq':
-    #     #     config = RMQConfig()
-    #     #     rmq_address = None
-    #     #     if config.is_ssl:
-    #     #         rmq_address = "amqps://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port_ssl,
-    #     #                                                              vhost=config.virtual_host)
-    #     #     else:
-    #     #         rmq_address = "amqp://{host}:{port}/{vhost}".format(host=config.hostname, port=config.amqp_port,
-    #     #                                                             vhost=config.virtual_host)
-    #     #     return_dict['rmq-address'] = rmq_address
-    #     #     return_dict['rmq-ca-cert'] = self._certs.cert(self._certs.root_ca_name).public_bytes(
-    #     #         serialization.Encoding.PEM).decode("utf-8")
-    #     return Response(jsonapi.dumps(return_dict), content_type="application/json")
-
     def app_routing(self, env, start_response):
         """
         The main routing function that maps the incoming request to a response.
@@ -444,15 +565,9 @@ class PlatformWebService(Agent):
             path_info = path_info[path_info.index('/', len('/http://')):]
 
         # only expose a partial list of the env variables to the registered
-        # agents.
-        envlist = ['HTTP_USER_AGENT', 'PATH_INFO', 'QUERY_STRING',
-                   'REQUEST_METHOD', 'SERVER_PROTOCOL', 'REMOTE_ADDR',
-                   'HTTP_ACCEPT_ENCODING', 'HTTP_COOKIE', 'CONTENT_TYPE',
-                   'HTTP_AUTHORIZATION', 'SERVER_NAME', 'wsgi.url_scheme',
-                   'HTTP_HOST']
+        # agents (never credentials, see PEER_ENV_KEYS).
         data = env['wsgi.input'].read().decode('utf-8')
-        passenv = dict(
-            (envlist[i], env[envlist[i]]) for i in range(0, len(envlist)) if envlist[i] in env.keys())
+        passenv = {k: env[k] for k in PEER_ENV_KEYS if k in env}
 
         _log.debug('path_info is: {}'.format(path_info))
         # Get the peer responsible for dealing with the endpoint.  If there
@@ -463,20 +578,10 @@ class PlatformWebService(Agent):
         if self.is_json_content(env):
             data = jsonapi.loads(data)
 
-        # Only if https available and rmq for the admin area.
-        if env['wsgi.url_scheme'] == 'https' and self.config.message_bus == 'rmq':
-            # Load the publickey that was used to sign the login message through the env
-            # parameter so agents can use it to verify the Bearer has specific
-            # jwt claims
-            passenv['WEB_PUBLIC_KEY'] = env['WEB_PUBLIC_KEY'] = self._certs.get_cert_public_key(
-                ClientContext.get_fq_identity(self.core.identity)).decode('utf-8')
-
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.
         if peer:
-            _log.debug('Calling peer {} back with env={} data={}'.format(
-                peer, passenv, data
-            ))
+            _log.debug('Calling peer {} back for {}'.format(peer, path_info))
             res = self.vip.rpc.call(peer, 'route.callback',
                                     passenv, data).get(timeout=60)
 
@@ -526,13 +631,27 @@ class PlatformWebService(Agent):
                 elif t == 'path':  # File service from agents on the platform.
                     if path_info == '/':
                         return self._redirect_index(env, start_response)
-                    server_path = v + path_info  # os.path.join(v, path_info)
-                    server_path = str(Path(server_path).resolve())
-                    _log.debug('Serverpath: {}'.format(server_path))
-                    # protects against relative server traversal.
-                    if not server_path.startswith(v):
+                    try:
+                        server_path = _safe_path_within_root(v, path_info)
+                    except HiddenPathError:
+                        # Hidden files (.git, .env, .htpasswd) are never served; answer as if absent.
+                        start_response('404 Not Found', [('Content-Type', 'text/html')])
+                        return [b'<h1>Not Found</h1>']
+                    except (ValueError, OSError):
+                        # ValueError: the resolved candidate escaped root
+                        # (traversal, absolute-path, prefix-sibling, symlink).
+                        # OSError: Path.resolve() on a broken symlink or a
+                        # permission error. Both are treated as 403 (fail-closed)
+                        # rather than propagating a 500.
+                        # VO-005/H2 warning log preserved: a rejection is a
+                        # security-relevant event and must stay observable.
+                        _log.warning(
+                            'Path traversal attempt blocked: %s not under root %s',
+                            path_info, v,
+                        )
                         start_response('403 Forbidden', [('Content-Type', 'text/html')])
                         return [b'<h1>403 Forbidden</h1>']
+                    _log.debug('Serverpath: {}'.format(server_path))
                     return self._sendfile(env, start_response, server_path)
 
         start_response('404 Not Found', [('Content-Type', 'text/html')])
@@ -644,6 +763,7 @@ class PlatformWebService(Agent):
             start_response('404 Not Found', [('Content-Type', 'text/html')])
             return [b'<h1>Not Found</h1>']
         elif not os.path.isfile(filename):
+            # Directories, sockets, devices and anything else that is not a regular file are never served.
             start_response('404 Not Found', [('Content-Type', 'text/html')])
             return [b'<h1>Not Found</h1>']
 
@@ -652,115 +772,12 @@ class PlatformWebService(Agent):
 
         response_headers = [
             ('Content-type', guess),
+            # Browsers must honour the declared type and not re-interpret, e.g., a text file as a script.
+            ('X-Content-Type-Options', 'nosniff'),
         ]
         start_response(status, response_headers)
 
         return FileWrapper(open(filename, 'rb'))
-
-    def _to_jsonrpc_obj(self, jsonrpcstr):
-        """ Convert data string into a JsonRpcData named tuple.
-
-        :param object data: Either a string or a dictionary representing a json document.
-        """
-        return jsonrpc.JsonRpcData.parse(jsonrpcstr)
-
-    def jsonrpc(self, env, data):
-        """ The main entry point for ^jsonrpc data
-
-        This method will only accept rpcdata.  The first time this method
-        is called, per session, it must be using get_authorization.  That
-        will return a session token that must be included in every
-        subsequent request.  The session is tied to the ip address
-        of the caller.
-
-        :param object env: Environment dictionary for the request.
-        :param object data: The JSON-RPC 2.0 method to call.
-        :return object: An JSON-RPC 2.0 response.
-        """
-        if env['REQUEST_METHOD'].upper() != 'POST':
-            return Response(jsonapi.dumps(jsonrpc.json_error('NA', INVALID_REQUEST,
-                                      'Invalid request method, only POST allowed')), content_type="application/json")
-
-        try:
-            rpcdata = self._to_jsonrpc_obj(data)
-            _log.info('rpc method: {}'.format(rpcdata.method))
-
-            # Authenticate rpc call
-            if 'authentication' in rpcdata.params:
-                if self.jsonrpc_verify_and_dispatch(rpcdata.params['authentication']):
-                    del rpcdata.params['authentication']
-                else:
-                    return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                           "Invalid username/password specified.")),
-                                        content_type="application/json")
-            else:
-                return Response(jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAUTHORIZED,
-                                                                     "Authentication parameter missing.")),
-                                    content_type="application/json")
-
-            if not rpcdata.method:
-                return Response(jsonapi.dumps(jsonrpc.json_error(
-                    'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
-            else:
-                if rpcdata.params:
-                    result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method, **rpcdata.params).get()
-                else:
-                    result_or_error = self.vip.rpc(rpcdata.id, rpcdata.method).get()
-
-        except AssertionError:
-            return Response(jsonapi.dumps(jsonrpc.json_error(
-                'NA', INVALID_REQUEST, 'Invalid rpc data {}'.format(data))), content_type="application/json")
-        except Unreachable:
-            return Response(
-                jsonapi.dumps(jsonrpc.json_error(rpcdata.id, UNAVAILABLE_PLATFORM,
-                                                 "Couldn't reach platform with method {} params: {}".format(
-                                                     rpcdata.method, rpcdata.params))),
-                content_type="application/json")
-        except Exception as e:
-
-            return Response(jsonapi.dumps(jsonrpc.json_error('NA', UNHANDLED_EXCEPTION, e)),
-                                content_type="application/json")
-
-        return Response(jsonapi.dumps(self._get_jsonrpc_response(rpcdata.id, result_or_error)),
-                            content_type="application/json")
-
-    def _get_jsonrpc_response(self, id, result_or_error):
-        """ Wrap the response in either a json-rpc error or result.
-
-        :param id:
-        :param result_or_error:
-        :return:
-        """
-        if isinstance(result_or_error, dict):
-            if 'jsonrpc' in result_or_error:
-                return result_or_error
-
-        if result_or_error is not None and isinstance(result_or_error, dict):
-            if 'error' in result_or_error:
-                error = result_or_error['error']
-                _log.debug("RPC RESPONSE ERROR: {}".format(error))
-                return jsonrpc.json_error(id, error['code'], error['message'])
-        return jsonrpc.json_result(id, result_or_error)
-
-    def jsonrpc_verify_and_dispatch(self, authentication):
-        """ Verify that the user is an admin
-
-        :param authentication: authentication generated by successful authentication
-        :return: Boolean
-        """
-        from ..web import NotAuthorized
-        try:
-            claims = self.get_user_claims(authentication)
-        except NotAuthorized:
-            _log.error("Unauthorized user attempted to connect to platform.")
-            return False
-        except jwt.ExpiredSignatureError:
-            _log.error("User attempted to connect with an expired signature.")
-            return False
-
-        return True
-
-
 
     @Core.receiver('onstart')
     def startupagent(self, sender, **kwargs):
@@ -768,16 +785,7 @@ class PlatformWebService(Agent):
         ssl_cert = self.config.ssl_cert
         rpc_caller = self.vip.rpc
         if self.config.bind_address.scheme == 'https':
-            # Admin interface is only available to rmq at present.
-            if self.config.message_bus == 'rmq':
-                self._admin_endpoints = AdminEndpoints(rmq_mgmt=self.core.rmq_mgmt,
-                                                       ssl_public_key=self._certs.get_cert_public_key(
-                                                           ClientContext.get_fq_identity(self.core.identity)),
-                                                       rpc_caller=rpc_caller)
             if ssl_key is None or ssl_cert is None:
-                # Because the  platform.web service certificate is a client to rabbitmq we
-                # can't use it directly therefore we use the -server on the file to specify
-                # the server based file.
                 base_filename = ClientContext.get_fq_identity(self.core.identity) + "-server"
                 ssl_cert = self._certs.cert_file(base_filename)
                 ssl_key = self._certs.private_key_file(base_filename)
@@ -791,18 +799,6 @@ class PlatformWebService(Agent):
         else:
             self._admin_endpoints = AdminEndpoints(rpc_caller=rpc_caller)
         _log.info(f'Starting web server binding to {self.config.bind_address}.')
-        # Handle the platform.web routes here.
-        #self.registeredroutes.append((re.compile('^/discovery/$'), 'callable', self._get_discovery))
-        #self.registeredroutes.append((re.compile('^/discovery/allow$'), 'callable', self._allow))
-        self.registered_routes.append((re.compile(r'/gs'), 'callable', self.jsonrpc))
-        # these routes are only available for rmq based message bus
-        # at present.
-        if self.config.message_bus == 'rmq':
-            # We need reference to the object so we can change the behavior of
-            # whether or not to have auto certs be created or not.
-            self._csr_endpoints = CSREndpoints(self.core)
-            for rt in self._csr_endpoints.get_routes():
-                self.registered_routes.append(rt)
 
         # Register the admin endpoints regardless of whether there is an ssl context
         # or not.
@@ -815,12 +811,8 @@ class PlatformWebService(Agent):
 
         # Allow authentication endpoint from any https connection
         if self.config.bind_address.scheme == 'https':
-            if self.config.message_bus == 'rmq':
-                ssl_private_key = self._certs.get_pk_bytes(ClientContext.get_fq_identity(self.core.identity))
-                ssl_public_key = self._certs.get_cert_public_key(ClientContext.get_fq_identity(self.core.identity))
-            else:
-                ssl_private_key = CertWrapper.get_private_key(ssl_key)
-                ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
+            ssl_private_key = CertWrapper.get_private_key(ssl_key)
+            ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
             for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
                 self.registered_routes.append(rt)
         else:
@@ -841,21 +833,6 @@ class PlatformWebService(Agent):
         else:
             svr = WSGIServer(((self.config.bind_address.host), port), self.appContainer)
         self._server_greenlet = gevent.spawn(svr.serve_forever)
-
-    def _authenticate_route(self, env, start_response, data):
-        scheme = env.get('wsgi.url_scheme')
-
-        if scheme != 'https':
-            _log.warning("Authentication should be through https")
-            start_response("401 Unauthorized", [('Content-Type', 'text/html')])
-            return "<html><body><h1>401 Unauthorized</h1></body></html>"
-
-        from pprint import pprint
-        pprint(env)
-
-        import jwt
-
-        jwt.encode()
 
     @Core.receiver('onstop')
     def onstop(self, sender, **kwargs):

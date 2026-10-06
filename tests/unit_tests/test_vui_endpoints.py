@@ -35,6 +35,7 @@ from werkzeug import Response
 
 from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
 
+from volttron.services.web.rpc_proxy_policy import RpcProxyPolicy
 from volttron.services.web.vui_endpoints import VUIEndpoints
 from volttron.utils.jsonrpc import RemoteError
 
@@ -587,6 +588,7 @@ def test_handle_platforms_agents_rpc_status_code(mock_platform_web_service, meth
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/agent_vip/rpc', method=method,
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
     response = vui_endpoints.handle_platforms_agents_rpc(env, {})
     check_response_codes(response, status)
 
@@ -595,6 +597,7 @@ def test_handle_platforms_agents_rpc_response(mock_platform_web_service):
     path = f'/vui/platforms/my_instance_name/agents/{CONTROL}/rpc'
     env = get_test_web_env(path, method='GET', HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
     vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_rpc(env, {})
     check_links_return(response, ['list_agents', 'peerlist', 'status_agents'], leading_path=path)
@@ -605,6 +608,7 @@ def test_handle_platforms_agents_rpc_method_status_code(mock_platform_web_servic
     env = get_test_web_env(f'/vui/platforms/my_instance_name/agents/{CONTROL}/rpc/status_agents', method=method,
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
     vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_rpc_method(env, {})
     check_response_codes(response, status)
@@ -614,6 +618,7 @@ def test_handle_platforms_rpc_method_get_response(mock_platform_web_service):
     env = get_test_web_env(f'/vui/platforms/my_instance_name/agents/{CONTROL}/rpc/status_agents', method='GET',
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
     vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_rpc_method(env, {})
     body = json.loads(response.response[0])
@@ -623,6 +628,7 @@ def test_handle_platforms_rpc_method_get_response(mock_platform_web_service):
 
 def test_handle_platforms_rpc_method_post_response(mock_platform_web_service):
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
     vui_endpoints._rpc = _mock_agents_rpc
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/agents_rpc/rpc/kw_only', method='POST',
                            HTTP_AUTHORIZATION='BEARER foo')

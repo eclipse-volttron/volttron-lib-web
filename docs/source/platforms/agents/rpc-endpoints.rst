@@ -12,6 +12,23 @@ RPC endpoints expose functionality associated with remote procedure calls to age
     All RPC endpoints require a JWT bearer token obtained through the ``POST /authenticate``
     or ``PUT /authenticate`` endpoints.
 
+.. attention::
+    RPC endpoints forward calls using the web service's own platform identity, and are closed by default. The
+    ``rpc-allow-list`` option of the ``[web]`` section of the platform configuration file lists which agents and
+    methods may be called, one ``[platform:] identity: method, method...`` entry per line, with shell-style
+    wildcards. For example::
+
+        [web]
+        rpc-allow-list =
+            platform.historian: query*
+            my.app.*: *
+            building2: some.agent: get_status, get_config
+
+    ``*: *`` opens every method of every installed agent. Requests that the allow-list does not cover are refused
+    with ``403 Forbidden``, and ``GET .../rpc`` lists only the permitted methods. The platform services
+    ``platform.auth``, ``platform.web``, ``config.store`` and ``platform.driver``, and the agent lifecycle and
+    installation methods of ``platform.control``, are never reachable through these endpoints.
+
 --------------
 
 GET /platforms/:platform/agents/:vip_identity/rpc

@@ -27,13 +27,18 @@ import pytest
 from io import BytesIO
 from mock import Mock, MagicMock, patch
 
-from volttron.client.vip.agent import Agent
+# Importing the mock core builder registers the "mock" core so that agents
+# constructed with name="mock" get a MockCore instead of a live ZMQ core.
+import volttrontesting.mock_core_builder  # noqa: F401
+
+from volttron.client.known_identities import PLATFORM_WEB
 from volttron.client.vip.agent.results import AsyncResult
+from volttron.server.server_options import ServerOptions
 from volttron.services.web.platform_web_service import PlatformWebService
+from volttron.types.auth.auth_credentials import Credentials
 from volttron.utils.messagebus import store_message_bus_config
 
 from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
-from volttrontesting.utils import AgentMock
 
 
 class QueryHelper:
@@ -51,28 +56,39 @@ class QueryHelper:
         return result
 
 
+def set_rpc_caller(agent, peer: str = "foo", user: str = None, method: str = None):
+    """
+    Populate the RPC subsystem's request context as the VIP dispatcher would for an
+    incoming call. The web service reads ``vip.rpc.context.vip_message.peer`` to learn
+    which agent is registering a route.
+    """
+    context = MagicMock()
+    context.vip_message.peer = peer
+    context.vip_message.user = user if user is not None else peer
+    context.vip_message.args = [{'method': method}]
+    agent.vip.rpc.context = context
+    return context
+
+
 @pytest.fixture()
 def mock_platform_web_service() -> PlatformWebService:
     volttron_home = create_volttron_home()
     with with_os_environ({'VOLTTRON_HOME': volttron_home}):
-        store_message_bus_config('', 'my_instance_name')
-        bases = PlatformWebService.__bases__
-        PlatformWebService.__bases__ = (AgentMock.imitate(Agent, Agent()),)
+        store_message_bus_config('zmq', 'my_instance_name')
+        opts = ServerOptions(volttron_home=volttron_home)
+        opts.services['web'] = {'bind_web_address': 'http://127.0.0.1:8080',
+                                'web_secret_key': 'unit-test-secret-key'}
         with patch(target='volttron.services.web.vui_endpoints.Query', new=QueryHelper):
-            platform_web = PlatformWebService(server_config=MagicMock(),
-                                              bind_web_address=MagicMock(),
-                                              serverkey=MagicMock(),
-                                              identity=MagicMock(),
-                                              address=MagicMock())
+            platform_web = PlatformWebService(opts, credentials=Credentials(identity=PLATFORM_WEB), name="mock")
             # Internally the register uses this value to determine the caller's identity
             # to allow the platform web service to map calls back to the proper agent
-            platform_web.vip.rpc.context.vip_message.peer.return_value = "foo"
+            set_rpc_caller(platform_web, peer="foo")
             platform_web.core.volttron_home = volttron_home
             platform_web.core.instance_name = 'my_instance_name'
             platform_web.get_user_claims = lambda x: {'groups': ['vui']}
 
             yield platform_web
-        PlatformWebService.__bases__ = bases
+
 
 def get_test_web_env(path, input_data: bytes = None, query_string='', url_scheme='http', method='GET',
                      **kwargs) -> dict:
