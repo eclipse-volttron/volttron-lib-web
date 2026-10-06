@@ -30,20 +30,20 @@ This library can be installed using pip:
 ```
 
 Once the library is installed, VOLTTRON will not be able to start until the
-web service is configured. Configurations for services, including this, reside
-in a service_config.yml file in the VOLTTRON_HOME directory
-(by default ~/.volttron/service_config.yml).
-If this file does not already exist, create it. To configure the web service,
+web service is configured. The web service is configured in a `[web]` section of the VOLTTRON platform
+configuration file in VOLTTRON_HOME (by default ~/.volttron/config). To configure the web service,
 include the following:
 
-```yaml
-volttron.services.web:
-  enabled: true
-  kwargs:
-    bind_web_address: http://192.168.0.101:8080
-    web_secret_key: some_string # If not using SSL.
-    web_ssl_cert: /path/to/certificate # Path to the SSL certificate to be used by the web service. 
-    web_ssl_key: /path/to/key # Path to the SSL secret key file used by web service.
+```ini
+[web]
+bind-web-address = http://192.168.0.101:8080
+web-secret-key = some_string  # If not using SSL.
+web-ssl-cert = /path/to/certificate  # Path to the SSL certificate to be used by the web service.
+web-ssl-key = /path/to/key  # Path to the SSL secret key file used by web service.
+rpc-allow-list =
+    platform.historian: query*
+    my.app.*: *
+web-root-dir = /var/lib/volttron/web-root  # Optional, see "Agent web files" below.
 ```
 
 Additionally, in order to use many of the API endpoints, an instance name must be set in the VOLTTRON platform
@@ -61,10 +61,59 @@ can be used if it is not desired for the web services to be reachable by other h
 (after the colon) can be any port which is not bound to another service on the host mahcine.
 80 or 8080 are common ports when not using SSL. 443 and 8443 are common ports to use when using SSL.
 
-If using SSL, both web_ssl_certificate and web_ssl_key are required
-and web_secret_key should not be included. If SSL is not desired,
-provide a web_secret_key instead and remove the lines for the web_ssl_cert
-and web_ssl_key. Any string can be used for the web_secret_key.
+If using SSL, both web-ssl-cert and web-ssl-key are required
+and web-secret-key should not be included. If SSL is not desired,
+provide a web-secret-key instead and remove the lines for the web-ssl-cert
+and web-ssl-key. Any string can be used for the web-secret-key.
+
+### RPC allow-list
+
+The `/vui/platforms/:platform/agents/:vip_identity/rpc/:method` endpoint forwards remote procedure calls to agents
+using the web service's own platform identity. It is closed by default: unless `rpc-allow-list` is configured, every
+request to it is refused with `403 Forbidden`. Each line of `rpc-allow-list` (continuation lines must be indented)
+opens a set of methods on a set of agents:
+
+```ini
+rpc-allow-list =
+    [platform-glob:] identity-glob: method-glob[, method-glob ...]
+```
+
+Patterns are shell-style globs (`*`, `?`, `[seq]`) matched case-sensitively against the whole name. A line with two
+fields applies to every platform; a leading platform field restricts the entry to platforms whose instance name
+matches it. For example:
+
+```ini
+rpc-allow-list =
+    platform.historian: query*                    # query methods of the historian, on every platform
+    my.app.*: *                                   # every method of agents whose identity starts with my.app.
+    building2: some.agent: get_status, get_config # two methods, only when addressed through platform building2
+```
+
+To open every method of every installed agent, use `rpc-allow-list = *: *`.
+
+Regardless of the allow-list, the proxy never forwards calls to the platform services `platform.auth`,
+`platform.web`, `config.store` and `platform.driver`, nor to the agent lifecycle and installation methods of
+`platform.control` (install, remove, start/stop platform, and similar). The dedicated `/agents` and `/devices`
+endpoints of the API provide the supported management and device operations.
+
+### Agent web files
+
+An agent can publish static files (an HTML user interface, scripts, images) through the web service by calling
+`register_path_route(regex)` on `platform.web`, where `regex` matches the request paths that should be served. The
+agent does not choose the directory the files are served from. Every agent has exactly one allotted *web root*, and
+only that directory can be registered:
+
+- By default the web root is `$VOLTTRON_HOME/agents/<vip-identity>/data/web-root`. The agent must create it and
+  place its files there; nothing else in its data directory is reachable.
+- If `web-root-dir` is set in the `[web]` section, the web root is `<web-root-dir>/<vip-identity>` instead and the
+  default location is no longer accepted. This keeps agent web files outside `VOLTTRON_HOME`, so they survive a
+  reinstall of the agent. The configured directory must already exist, must not be the filesystem root, and must
+  not be `VOLTTRON_HOME` or any directory containing it.
+
+The agent can ask for its web root with the `get_web_root` RPC method of `platform.web`. The full request path is
+appended to the web root when a file is served, so the directory layout must mirror the URL paths the regex
+matches. Hidden files and directories (names beginning with a dot) and anything that is not a regular file are never
+served, and every file is served with `X-Content-Type-Options: nosniff`.
 
 Full VOLTTRON documentation is available at [VOLTTRON Readthedocs](https://eclipse-volttron.readthedocs.io/)
 

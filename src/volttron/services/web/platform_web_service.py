@@ -37,13 +37,14 @@ from collections import defaultdict
 from gevent import Greenlet
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pathlib import Path
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, model_validator, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator, SecretStr
 from werkzeug import Response
 
 from ws4py.server.geventserver import WSGIServer
 
 from .admin_endpoints import AdminEndpoints
 from .vui_endpoints import VUIEndpoints
+from .rpc_proxy_policy import RpcProxyPolicy
 from .authenticate_endpoint import AuthenticateEndpoints
 from .csr_endpoints import CSREndpoints
 from .webapp import WebApplicationWrapper
@@ -74,24 +75,37 @@ class DuplicateEndpointError(Exception):
     pass
 
 
+class HiddenPathError(Exception):
+    """The requested file is inside the root but a path segment is hidden (begins with a dot)."""
+
+
 def _safe_path_within_root(root_dir: str, path_info: str) -> str:
-    """Return the resolved candidate path if it is strictly within root_dir.
+    """Return the resolved candidate path if it is strictly within root_dir and not hidden.
 
     Raises ValueError when the resolved candidate escapes the root so callers
     can return 403 without leaking file bytes. Uses Path.relative_to for
-    containment.
+    containment. Raises HiddenPathError when any segment of the in-root path
+    begins with a dot (``.git``, ``.env``, ``.htpasswd``); callers answer 404 so
+    hidden files are indistinguishable from absent ones.
 
     :param root_dir: canonical (pre-resolved) root as stored in registered_routes
     :param path_info: raw PATH_INFO from the WSGI environment
     :returns: resolved absolute path string safe to pass to _sendfile
     :raises ValueError: if the resolved path escapes root_dir
+    :raises HiddenPathError: if the in-root path contains a hidden segment
     """
     root = Path(root_dir).resolve()
     # Strip leading slashes before joining so Path('/abs') does not replace root.
     candidate = (root / path_info.lstrip('/')).resolve()
     # relative_to raises ValueError when candidate is outside root.
-    candidate.relative_to(root)
+    relative = candidate.relative_to(root)
+    if any(part.startswith('.') for part in relative.parts):
+        raise HiddenPathError(str(relative))
     return str(candidate)
+
+
+# Name of the directory inside an agent's data directory whose contents it may publish through the web service.
+AGENT_WEB_ROOT_DIRNAME = 'web-root'
 
 
 __PACKAGE_DIR__ = os.path.dirname(os.path.abspath(__file__))
@@ -108,12 +122,54 @@ tplenv = Environment(
 )
 
 class WebServiceConfig(BaseModel):
-    model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True)
+    model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True,
+                              arbitrary_types_allowed=True)
     bind_address: AnyHttpUrl = Field(validation_alias='bind_web_address')
     message_bus: str = Field(alias='messagebus')
     secret_key: SecretStr | None = Field(default=None, alias='web_secret_key')
     ssl_key: str | None = Field(default=None, alias='web_ssl_key')
     ssl_cert: str | None = Field(default=None, alias='web_ssl_cert')
+    # Which RPC calls the VUI /rpc proxy may forward. Configured as the multi-line "rpc-allow-list" option of the
+    # [web] section; see rpc_proxy_policy.py for the syntax. Empty by default, which closes the proxy.
+    rpc_allow_list: RpcProxyPolicy = Field(default_factory=RpcProxyPolicy)
+    # Needed to validate web_root_dir (declared first so its value is available to that validator); supplied by
+    # the service from ServerOptions.
+    volttron_home: Path = Field(default_factory=lambda: Path(ClientContext.get_volttron_home()))
+    # Optional directory holding one web-root subdirectory per agent identity. When set, agents publish static
+    # files from "<web_root_dir>/<identity>" instead of "<VOLTTRON_HOME>/agents/<identity>/data/web-root", so
+    # their web files survive a reinstall of the agent. Configured as "web-root-dir" in the [web] section.
+    web_root_dir: Path | None = Field(default=None)
+
+    @field_validator('web_root_dir', mode='after')
+    @classmethod
+    def validate_web_root_dir(cls, web_root_dir: Path | None, info) -> Path | None:
+        """Canonicalize web_root_dir and refuse locations that would expose the platform's own files.
+
+        The directory must already exist so a typo fails loudly at startup instead of silently refusing every
+        agent registration. It must not be the filesystem root, and it must not be VOLTTRON_HOME or any ancestor
+        of it: per-agent subdirectories of such a root could be made to coincide with the keystore, credential
+        store or configuration directories.
+        """
+        if web_root_dir is None:
+            return None
+        resolved = Path(web_root_dir).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ValueError(f'Parameter "web_root_dir" must be an existing directory: {web_root_dir!s}')
+        if resolved == Path(resolved.anchor):
+            raise ValueError('Parameter "web_root_dir" must not be the filesystem root.')
+        volttron_home = Path(info.data.get('volttron_home') or ClientContext.get_volttron_home()).expanduser().resolve()
+        if resolved == volttron_home or resolved in volttron_home.parents:
+            raise ValueError(f'Parameter "web_root_dir" must not be VOLTTRON_HOME or a directory containing it: '
+                             f'{web_root_dir!s}')
+        return resolved
+
+    @field_validator('rpc_allow_list', mode='before')
+    @classmethod
+    def parse_rpc_allow_list(cls, value) -> RpcProxyPolicy:
+        if isinstance(value, RpcProxyPolicy):
+            return value
+        # RpcAllowListError is a ValueError, so pydantic reports a bad entry as a normal validation error.
+        return RpcProxyPolicy(value)
 
     @model_validator(mode='after')
     def validate_auth_requirements(self) -> WebServiceConfig:
@@ -139,7 +195,8 @@ class PlatformWebService(Agent):
         Initialize the configuration of the base web service integration within the platform.
 
         """
-        self.config = WebServiceConfig(message_bus=opts.messagebus, **opts.services.get('web', {}))
+        self.config = WebServiceConfig(message_bus=opts.messagebus, volttron_home=opts.volttron_home,
+                                       **opts.services.get('web', {}))
         with set_agent_identity(self.Meta.identity):
             super().__init__(address=opts.service_address, **kwargs)
 
@@ -173,6 +230,13 @@ class PlatformWebService(Agent):
         Web server ssl key path
         """
         return self.config.ssl_key
+
+    @property
+    def rpc_proxy_policy(self) -> RpcProxyPolicy:
+        """
+        Policy deciding which RPC calls the VUI /rpc proxy may forward.
+        """
+        return self.config.rpc_allow_list
 
     # pylint: disable=unused-argument
     @Core.receiver('onsetup')
@@ -290,40 +354,80 @@ class PlatformWebService(Agent):
         endpoints = {i:endpoints[i] for i in endpoints if endpoints[i][0] != identity}
         self.endpoints = endpoints
 
+    def agent_web_root(self, identity: str) -> Path:
+        """Return the one directory from which the agent with this identity may publish static files.
+
+        With ``web-root-dir`` configured this is ``<web_root_dir>/<identity>``; otherwise it is
+        ``<VOLTTRON_HOME>/agents/<identity>/data/web-root``. The directory is not created here and need not exist
+        until the agent registers it.
+
+        :raises ValueError: if the identity is not a single clean path component, so it cannot be used to name
+            a directory without the risk of selecting a different one.
+        """
+        if not identity or Path(identity).name != identity or identity in ('.', '..'):
+            raise ValueError(f'Cannot derive a web root for identity {identity!r}.')
+        if self.config.web_root_dir is not None:
+            parent = self.config.web_root_dir
+            web_root = parent / identity
+        else:
+            parent = Path(self.config.volttron_home) / 'agents' / identity / 'data'
+            web_root = parent / AGENT_WEB_ROOT_DIRNAME
+        resolved = web_root.resolve()
+        if resolved.parent != parent.resolve():
+            # A symlink or similar has moved the allotted directory somewhere else. Refuse rather than follow.
+            raise ValueError(f'Web root for identity {identity!r} does not resolve to a child of {parent}.')
+        return resolved
+
     @RPC.export
-    def register_path_route(self, regex, root_dir):
+    def get_web_root(self) -> str:
+        """Return the directory from which the calling agent may publish static files via register_path_route.
+
+        The directory is not created. Place files in it, then call register_path_route with the URL pattern they
+        should be served under.
+        """
+        identity = self.vip.rpc.context.vip_message.peer
+        return str(self.agent_web_root(identity))
+
+    @RPC.export
+    def register_path_route(self, regex, root_dir=None):
+        """Serve the calling agent's web root for requests matching regex.
+
+        Static files are always served from the agent's allotted web root (see get_web_root); the agent cannot
+        choose another directory. ``root_dir`` is accepted for compatibility with the client subsystem and, when
+        given, must name that same directory. Returns the directory that was registered.
+        """
         # Get calling identity from whom the request came from
         identity = self.vip.rpc.context.vip_message.peer
 
         _log.info(f'Registering web path route from {identity} regex: {regex} dir: {root_dir}')
 
-        # Canonicalize the root before any existence or containment check so symlinks, '..',
-        # and other path tricks resolve to their real location.
-        canonical_root = Path(root_dir).resolve()
+        try:
+            web_root = self.agent_web_root(identity)
+        except ValueError as e:
+            _log.warning(f'Refused web path route from {identity}: {e}')
+            raise
 
-        # Reject the filesystem root: relative_to(Path('/')) succeeds for every path so a root of '/'
-        # degenerates the containment check into a no-op and allows serving /etc/passwd and the CURVE keystore.
-        # (data-invariants Rule 3: the boundary root itself is a candidate for the disallowed condition.)
-        if canonical_root == Path('/').resolve():
-            raise ValueError(
-                f"root_dir must not be the filesystem root: {root_dir!r}"
-            )
+        if root_dir is not None and Path(root_dir).expanduser().resolve() != web_root:
+            _log.warning(f'Refused web path route from {identity}: {root_dir!r} is not its web root {web_root}.')
+            raise ValueError(f"root_dir must be the agent's web root {web_root} (or be omitted): {root_dir!r}")
 
-        # Reject a root that is not a directory. A regular file as root is also a boundary violation:
-        # the serve-time join logic assumes a directory.
-        if not canonical_root.is_dir():
-            raise ValueError(
-                f"root_dir must be an existing directory: {root_dir!r}"
-            )
+        # Defense in depth: the web root is derived from a per-identity path and can never be the filesystem
+        # root, but the serve-time containment check degenerates to a no-op for '/' so refuse it explicitly.
+        if web_root == Path(web_root.anchor):
+            raise ValueError(f"root_dir must not be the filesystem root: {root_dir!r}")
 
-        # TODO: Consider restricting registrable roots to an allowlist under a configured base path
-        #  or adding a configurable 'web_root_base' option that, when set, rejects any root_dir outside that base.
+        if not web_root.is_dir():
+            _log.warning(f'Refused web path route from {identity}: web root {web_root} is not an existing directory.')
+            raise ValueError(f"root_dir must be an existing directory: {web_root}")
+
+        canonical_root = web_root
 
         compiled = re.compile(regex)
         self.path_routes[identity].append(compiled)
         # in order for this agent to pass against the default route we want this
         # to be before the last route which will resolve to .*
         self.registered_routes.insert(len(self.registered_routes) - 1, (compiled, 'path', str(canonical_root)))
+        return str(canonical_root)
 
     @RPC.export
     def register_websocket(self, endpoint):
@@ -478,6 +582,10 @@ class PlatformWebService(Agent):
                         return self._redirect_index(env, start_response)
                     try:
                         server_path = _safe_path_within_root(v, path_info)
+                    except HiddenPathError:
+                        # Hidden files (.git, .env, .htpasswd) are never served; answer as if absent.
+                        start_response('404 Not Found', [('Content-Type', 'text/html')])
+                        return [b'<h1>Not Found</h1>']
                     except (ValueError, OSError):
                         # ValueError: the resolved candidate escaped root
                         # (traversal, absolute-path, prefix-sibling, symlink).
@@ -604,6 +712,7 @@ class PlatformWebService(Agent):
             start_response('404 Not Found', [('Content-Type', 'text/html')])
             return [b'<h1>Not Found</h1>']
         elif not os.path.isfile(filename):
+            # Directories, sockets, devices and anything else that is not a regular file are never served.
             start_response('404 Not Found', [('Content-Type', 'text/html')])
             return [b'<h1>Not Found</h1>']
 
@@ -612,6 +721,8 @@ class PlatformWebService(Agent):
 
         response_headers = [
             ('Content-type', guess),
+            # Browsers must honour the declared type and not re-interpret, e.g., a text file as a script.
+            ('X-Content-Type-Options', 'nosniff'),
         ]
         start_response(status, response_headers)
 

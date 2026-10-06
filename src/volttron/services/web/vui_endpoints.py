@@ -59,6 +59,7 @@ from volttron.utils.context import ClientContext
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
 from volttron.lib.tree import DeviceTree, TopicTree
 from .vui_pubsub import VUIPubsubManager
+from .rpc_proxy_policy import RpcProxyPolicy
 
 
 import logging
@@ -66,6 +67,14 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_LOG_TAIL = 200
 DEFAULT_LOG_BYTES = 65536
+
+
+def _forbidden_rpc_response(platform, vip_identity, method_name=None):
+    target = f'{vip_identity}.{method_name}' if method_name else vip_identity
+    _log.warning(f"Refused to proxy RPC to {target} on platform {platform}: "
+                 f"peer or method is not permitted by the rpc-allow-list.")
+    return Response(json.dumps({'error': f'RPC to {target} is not permitted through the web API.'}), 403,
+                    content_type='application/json')
 
 
 class OverrideError(Exception):
@@ -114,6 +123,8 @@ class VUIEndpoints:
         self._agent = agent
         q = Query(self._agent.core)
         self.local_instance_name = q.query('instance-name').get(timeout=5)
+        # Which RPC calls the /rpc proxy may forward (see rpc_proxy_policy.py).
+        self.rpc_policy: RpcProxyPolicy = self._agent.rpc_proxy_policy
         # TODO: Load active_routes from configuration. Default can just be {'vui': {'endpoint-active': False}}
         self.active_routes = {
             'vui': {
@@ -503,9 +514,13 @@ class VUIEndpoints:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/rpc/?$', path_info).groups()
+        # Refuse before inspecting so a closed peer cannot be probed for existence or method names.
+        if not self.rpc_policy.permits_any(platform, vip_identity):
+            return _forbidden_rpc_response(platform, vip_identity)
         if request_method == 'GET':
             method_dict = self._rpc(vip_identity, 'inspect', external_platform=platform)
-            response = self._links(path_info, method_dict.get('methods'))
+            methods = self.rpc_policy.filter_methods(platform, vip_identity, method_dict.get('methods') or [])
+            response = self._links(path_info, methods)
             return Response(json.dumps(response), 200, content_type='application/json')
 
     @endpoint
@@ -520,6 +535,8 @@ class VUIEndpoints:
         request_method = env.get("REQUEST_METHOD")
         platform, vip_identity, method_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/rpc/([^/]+)/?$',
                                                        path_info).groups()
+        if not self.rpc_policy.is_allowed(platform, vip_identity, method_name):
+            return _forbidden_rpc_response(platform, vip_identity, method_name)
         if request_method == 'GET':
             try:
                 method_dict = self._rpc(vip_identity, method_name + '.inspect', external_platform=platform)
