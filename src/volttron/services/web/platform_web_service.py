@@ -567,7 +567,9 @@ class PlatformWebService(Agent):
 
         # only expose a partial list of the env variables to the registered
         # agents (never credentials, see PEER_ENV_KEYS).
-        data = env['wsgi.input'].read().decode('utf-8')
+        # A websocket upgrade request (ws4py puts the raw socket in env['ws4py.socket']) carries no body; reading
+        # wsgi.input for it blocks until the client closes the connection, so the handshake would never be sent.
+        data = '' if 'ws4py.socket' in env else env['wsgi.input'].read().decode('utf-8')
         passenv = {k: env[k] for k in PEER_ENV_KEYS if k in env}
 
         _log.debug('path_info is: {}'.format(path_info))
@@ -593,11 +595,9 @@ class PlatformWebService(Agent):
 
         env['JINJA2_TEMPLATE_ENV'] = tplenv
 
-        # if ws4pi.socket is set then this connection is a web socket
-        # and so we return the websocket response.
-
-        if 'ws4py.socket' in env:
-            return env['ws4py.socket'](env, start_response)
+        # Websocket upgrade requests are not handled here. Agent websockets registered with register_websocket are
+        # completed by WebApplicationWrapper before this method is reached, and routes that upgrade their own
+        # connections (e.g. the VUI pubsub endpoints) perform the ws4py handshake themselves below.
 
         for k, t, v in self.registered_routes:
             if k.match(path_info):
