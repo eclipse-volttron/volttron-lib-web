@@ -158,7 +158,7 @@ class TestRpcProxyPolicyMatching:
     @pytest.mark.parametrize("peer, method", [
         (AUTH, 'create_or_merge_agent_authz'), (AUTH, 'list_credentials'),
         (PLATFORM_WEB, 'register_path_route'), (PLATFORM_WEB, 'get_user_claims'),
-        (CONFIGURATION_STORE, 'delete_store'), (CONFIGURATION_STORE, 'manage_list_stores'),
+        (CONFIGURATION_STORE, 'delete_store'), (CONFIGURATION_STORE, 'list_stores'),
         (PLATFORM_DRIVER, 'set_point'), (PLATFORM_DRIVER, 'get_point'),
         (CONTROL, 'install_agent'), (CONTROL, 'remove_agent'), (CONTROL, 'shutdown'), (CONTROL, 'stop_platform'),
         (CONTROL, 'clear_status'), (CONTROL, 'prioritize_agent'), (CONTROL, 'tag_agent'),
@@ -205,7 +205,7 @@ class TestRpcProxyEndpoints:
         vui._rpc.assert_not_called()
 
     @pytest.mark.parametrize("peer, method", [(AUTH, 'create_or_merge_agent_authz'), (PLATFORM_WEB, 'get_user_claims'),
-                                              (CONFIGURATION_STORE, 'manage_delete_store'),
+                                              (CONFIGURATION_STORE, 'delete_config'),
                                               (PLATFORM_DRIVER, 'set_point'), (CONTROL, 'shutdown'),
                                               (CONTROL, 'install_agent')])
     def test_denied_method_call_is_403_and_not_forwarded(self, vui, peer, method):

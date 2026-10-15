@@ -424,15 +424,15 @@ class VUIEndpoints:
             try:
                 if no_config_name:
                     if vip_identity != '-':
-                        setting_list = self._rpc(CONFIGURATION_STORE, 'manage_list_configs', vip_identity,
+                        setting_list = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
                                                  external_platform=platform)
                         route_dict = self._links(path_info, setting_list)
                         return Response(json.dumps(route_dict), 200, content_type='application/json')
                     else:
-                        list_of_agents = self._rpc(CONFIGURATION_STORE, 'manage_list_stores', external_platform=platform)
+                        list_of_agents = self._rpc(CONFIGURATION_STORE, 'list_stores', external_platform=platform)
                         return Response(json.dumps(list_of_agents), 200, content_type='application/json')
                 elif not no_config_name:
-                    setting_dict = self._rpc(CONFIGURATION_STORE, 'manage_get', vip_identity, config_name,
+                    setting_dict = self._rpc(CONFIGURATION_STORE, 'get_config', vip_identity, config_name,
                                              external_platform=platform)
                     return Response(json.dumps(setting_dict), 200, content_type='application/json')
             except RemoteError as e:
@@ -449,7 +449,7 @@ class VUIEndpoints:
 
         elif request_method == 'POST' and no_config_name:
             if config_type in ['application/json', 'text/csv', 'text/plain']:
-                setting_list = self._rpc(CONFIGURATION_STORE, 'manage_list_configs', vip_identity,
+                setting_list = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
                                          external_platform=platform)
                 if config_name in setting_list:
                     e = {'Error': f'Configuration: "{config_name}" already exists for agent: "{vip_identity}"'}
@@ -466,13 +466,13 @@ class VUIEndpoints:
         elif request_method == 'DELETE':
             if no_config_name:
                 try:
-                    self._rpc(CONFIGURATION_STORE, 'manage_delete_store', vip_identity, external_platform=platform)
+                    self._rpc(CONFIGURATION_STORE, 'delete_store', vip_identity, external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
             else:
                 try:
-                    self._rpc(CONFIGURATION_STORE, 'manage_delete_config', vip_identity, config_name,
+                    self._rpc(CONFIGURATION_STORE, 'delete_config', vip_identity, config_name,
                               external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
@@ -1185,7 +1185,7 @@ class VUIEndpoints:
                                                                                       'text/csv'] else 'raw'
         if config_type == 'json':
             data = json.dumps(data)
-        self._rpc(CONFIGURATION_STORE, 'manage_store', vip_identity, config_name, data, config_type,
+        self._rpc(CONFIGURATION_STORE, 'set_config', vip_identity, config_name, data, config_type,
                   external_platform=platform)
         return None
 
