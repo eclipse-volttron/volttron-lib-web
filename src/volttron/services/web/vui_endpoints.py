@@ -760,6 +760,17 @@ class VUIEndpoints:
         except Timeout as e:
             return Response(json.dumps({'error': f'RPC Timed Out: {e}'}), 504, content_type='application/json')
 
+        # The Platform Driver's get/set/revert RPCs take a list of point identifiers (the full equipment topic, e.g.
+        # devices/campus/building/device/point) and key their results by the same identifiers. The web API keys its
+        # responses by the topic without the root segment, so map identifiers back to topics here.
+        def _driver_rpc(method, **kwargs):
+            return self._rpc(self._agent.driver_vip_identity, method, external_platform=platform, **kwargs)
+
+        def _read_values(point_nodes):
+            values, errors = _driver_rpc('get', topic=[p.identifier for p in point_nodes])
+            return ({p.topic: values[p.identifier] for p in point_nodes if p.identifier in values},
+                    {p.topic: errors[p.identifier] for p in point_nodes if p.identifier in errors})
+
         if request_method == 'GET':
             # Query parameters:
             read_all = self._to_bool(query_params.get('read-all', False))
@@ -773,11 +784,10 @@ class VUIEndpoints:
                     # Either leaf values are explicitly requested, or all nodes are already points -- Return points:
                     ret_dict = defaultdict(dict)
                     if return_values:
-                        ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
-                                               [d.topic for d in points], external_platform=platform)
-                        for k, v in ret_values[0].items():
+                        values, value_errors = _read_values(points)
+                        for k, v in values.items():
                             ret_dict[k]['value'] = v
-                        for k, e in ret_values[1].items():
+                        for k, e in value_errors.items():
                             ret_dict[k]['value_error'] = e
                     for point in points:
                         if return_routes:
@@ -808,21 +818,18 @@ class VUIEndpoints:
             # Set selected points:
             try:
                 set_value = data.get('value')
-                topics_values = [(d.topic, set_value) for d in points if d.topic not in unwritables]
-                ret_errors = self._rpc(self._agent.driver_vip_identity, 'set_multiple_points',
-                                       requester_id=self._agent.core.identity, topics_values=topics_values,
-                                       external_platform=platform)
+                writable_points = [p for p in points if p.topic not in unwritables]
+                _, set_errors = _driver_rpc('set', value=set_value, topic=[p.identifier for p in writable_points])
                 ret_dict = defaultdict(dict)
-                for k in selected_routes.keys():
-                    ret_dict[k]['route'] = selected_routes[k]
-                    ret_dict[k]['set_error'] = ret_errors.get(k)
-                    ret_dict[k]['writable'] = True if k not in unwritables else False
+                for p in points:
+                    ret_dict[p.topic]['route'] = selected_routes[p.topic]
+                    ret_dict[p.topic]['set_error'] = set_errors.get(p.identifier)
+                    ret_dict[p.topic]['writable'] = p.topic not in unwritables
                 if confirm_values:
-                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
-                                           [d.topic for d in points], external_platform=platform)
+                    values, value_errors = _read_values(points)
                     for k in selected_routes.keys():
-                        ret_dict[k]['value'] = ret_values[0].get(k)
-                        ret_dict[k]['value_check_error'] = ret_values[1].get(k)
+                        ret_dict[k]['value'] = values.get(k)
+                        ret_dict[k]['value_check_error'] = value_errors.get(k)
 
                 return Response(json.dumps(ret_dict), 200, content_type='application/json')
 
@@ -837,27 +844,22 @@ class VUIEndpoints:
             except ValueError as e:
                 return Response(str(e), status=405, content_type='application/json')
 
-            # Reset selected points:
+            # Revert selected points:
             try:
-                for t_node in topic_nodes:
-                    if t_node.is_device():
-                        self._rpc(self._agent.driver_vip_identity, 'revert_device', requester_id=self._agent.core.identity,
-                                  topic=t_node.topic, external_platform=platform)
-                    elif t_node.is_point() and t_node.topic not in unwritables:
-                        self._rpc(self._agent.driver_vip_identity, 'revert_point', requester_id=self._agent.core.identity,
-                                  topic=t_node.topic, external_platform=platform)
+                writable_points = [p for p in points if p.topic not in unwritables]
+                revert_errors = _driver_rpc('revert', topic=[p.identifier for p in writable_points])
 
                 ret_dict = defaultdict(dict)
-                for k in selected_routes.keys():
-                    ret_dict[k]['route'] = selected_routes[k]
-                    ret_dict[k]['writable'] = True if k not in unwritables else False
+                for p in points:
+                    ret_dict[p.topic]['route'] = selected_routes[p.topic]
+                    ret_dict[p.topic]['revert_error'] = revert_errors.get(p.identifier)
+                    ret_dict[p.topic]['writable'] = p.topic not in unwritables
 
                 if confirm_values:
-                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
-                                           [d.topic for d in points], external_platform=platform)
+                    values, value_errors = _read_values(points)
                     for k in selected_routes.keys():
-                        ret_dict[k]['value'] = ret_values[0].get(k)
-                        ret_dict[k]['value_check_error'] = ret_values[1].get(k)
+                        ret_dict[k]['value'] = values.get(k)
+                        ret_dict[k]['value_check_error'] = value_errors.get(k)
                 return Response(json.dumps(ret_dict), 200, content_type='application/json')
 
             except (LockError, OverrideError) as e:

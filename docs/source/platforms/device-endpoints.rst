@@ -265,6 +265,7 @@ Response:
          {
             "<topic>": {
                 "route": "/vui/platforms/:platform/devices/:topic",
+                "revert_error": <null or error message>,
                 "writable": <bool>
             }
         }
@@ -280,6 +281,7 @@ Response:
          {
             "<topic>": {
                 "route": "/vui/platforms/:platform/devices/:topic",
+                "revert_error": <null or error message>,
                 "writable": <bool>,
                 "value": <value>,
                 "value_check_error": <null or error message>

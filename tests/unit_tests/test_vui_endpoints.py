@@ -883,17 +883,16 @@ def test_handle_platforms_agents_tag_delete_response(mock_platform_web_service, 
 
 
 def _mock_devices_rpc(peer, meth, *args, external_platform=None, **kwargs):
-    if peer == PLATFORM_DRIVER and meth == 'get_multiple_points':
-        ret_val = [{}, {}]
-        for topic in args[0]:
-            ret_val[0][topic] = 10.0
-        return ret_val
-    elif peer == PLATFORM_DRIVER and meth == 'set_multiple_points':
+    # The driver's get/set/revert take topic=[<identifier>, ...] and key results by those identifiers.
+    if peer == PLATFORM_DRIVER and meth == 'get':
+        assert all(t.startswith('devices/') for t in kwargs['topic'])
+        return [{t: 10.0 for t in kwargs['topic']}, {}]
+    elif peer == PLATFORM_DRIVER and meth == 'set':
+        assert all(t.startswith('devices/') for t in kwargs['topic'])
+        return [{t: kwargs['value'] for t in kwargs['topic']}, {}]
+    elif peer == PLATFORM_DRIVER and meth == 'revert':
+        assert all(t.startswith('devices/') for t in kwargs['topic'])
         return {}
-    elif peer == PLATFORM_DRIVER and meth == 'revert_device':
-        return None
-    elif peer == PLATFORM_DRIVER and meth == 'revert_point':
-        return None
     elif peer == 'platform.tagging' and meth == 'get_topics_by_tag':
         return []
 
@@ -1020,6 +1019,7 @@ def test_handle_platforms_devices_delete_response(mock_platform_web_service, top
             for k, v in body.items():
                 keys = list(v.keys())
                 assert 'route' in keys
+                assert 'revert_error' in keys
                 assert 'writable' in keys
                 assert isinstance(v['writable'], bool)
                 if confirm_values:
