@@ -295,12 +295,18 @@ def _mock_agents_rpc(peer, meth, *args, external_platform=None, **kwargs):
                                                                'config2': {'setting1': 3, 'setting2': 4}}},
                               {'identity': 'run2', 'configs': {'config1': {'setting1': 5, 'setting2': 6},
                                                                'config2': {'setting1': 7, 'setting2': 8}}}]
-    if peer == CONFIGURATION_STORE and meth == 'get_config':
+    # A CSV config kept outside config_definition_list so the list/links expectations above are unchanged.
+    csv_configs = {('run1', 'points.csv'): ('Point Name,Value\nA,1\n', [{'Point Name': 'A', 'Value': '1'}])}
+    if peer == CONFIGURATION_STORE and meth in ('get_config', 'get_metadata'):
+        if (args[0], args[1]) in csv_configs:
+            raw, parsed = csv_configs[(args[0], args[1])]
+            return parsed if meth == 'get_config' else {'type': 'csv', 'modified': None, 'data': raw}
         config_list = [a['configs'].get(args[1]) for a in config_definition_list if a['identity'] == args[0]]
         if not config_list or config_list == [None]:
             raise RemoteError(f'''builtins.KeyError('No configuration file \"{args[1]}\" for VIP IDENTIY {args[0]}')''',
                               exc_info={"exc_type": '', "exc_args": []})
-        return config_list[0] if config_list else []
+        parsed = config_list[0]
+        return parsed if meth == 'get_config' else {'type': 'json', 'modified': None, 'data': json.dumps(parsed)}
     elif peer == CONFIGURATION_STORE and meth == 'list_configs':
         config_list = [a['configs'].keys() for a in config_definition_list if a['identity'] == args[0]]
         return config_list[0] if config_list else []
@@ -457,6 +463,37 @@ def test_handle_platforms_agents_configs_config_get_response(mock_platform_web_s
     vui_endpoints._rpc = MagicMock(wraps=_mock_agents_rpc)
     response = vui_endpoints.handle_platforms_agents_configs(env, {})
     assert json.loads(response.response[0]) == expected
+
+
+@pytest.mark.parametrize('config_name, accept, status, content_type, body', [
+    ('config1', None, 200, 'application/json', '{"setting1": 1, "setting2": 2}'),
+    ('config1', '*/*', 200, 'application/json', '{"setting1": 1, "setting2": 2}'),
+    ('config1', 'text/csv, application/json;q=0.5', 200, 'application/json', '{"setting1": 1, "setting2": 2}'),
+    ('points.csv', None, 200, 'application/json', '[{"Point Name": "A", "Value": "1"}]'),
+    ('points.csv', 'text/csv', 200, 'text/csv', 'Point Name,Value\nA,1\n'),
+    ('points.csv', 'text/plain', 200, 'text/plain', 'Point Name,Value\nA,1\n'),
+    ('config1', 'text/plain', 200, 'text/plain', '{"setting1": 1, "setting2": 2}'),
+    ('config1', 'text/*', 200, 'text/plain', '{"setting1": 1, "setting2": 2}'),
+    ('config1', 'text/csv', 406, 'application/json', None),
+    ('config1', 'application/xml', 406, 'application/json', None),
+])
+def test_handle_platforms_agents_configs_config_get_accept(mock_platform_web_service, config_name, accept, status,
+                                                           content_type, body):
+    path = f'/vui/platforms/my_instance_name/agents/run1/configs/{config_name}'
+    headers = {'HTTP_ACCEPT': accept} if accept is not None else {}
+    env = get_test_web_env(path, method='GET', HTTP_AUTHORIZATION='Bearer foo', **headers)
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = MagicMock(wraps=_mock_agents_rpc)
+    response = vui_endpoints.handle_platforms_agents_configs(env, {})
+    assert response.status_code == status
+    assert response.content_type.startswith(content_type)
+    if body is not None:
+        assert response.get_data(as_text=True) == body
+    if status == 406:
+        assert 'Error' in json.loads(response.get_data(as_text=True))
+    if content_type == 'application/json' and status == 200:
+        vui_endpoints._rpc.assert_called_once_with(CONFIGURATION_STORE, 'get_config', 'run1', config_name, raw=False,
+                                                   external_platform='my_instance_name')
 
 
 @pytest.mark.parametrize('vip_identity, config_name, data_given, data_passed, config_type, status', [

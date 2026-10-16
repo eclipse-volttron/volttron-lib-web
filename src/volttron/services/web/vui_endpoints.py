@@ -398,6 +398,28 @@ class VUIEndpoints:
                 active_routes['links'].pop('rpc')
             return Response(json.dumps(active_routes), 200, content_type='application/json')
 
+    CONFIG_RESPONSE_TYPES = ('application/json', 'text/csv', 'text/plain')
+
+    @staticmethod
+    def _negotiate_config_response_type(accept_header: str | None) -> str | None:
+        """Choose the media type for a configuration GET from the request's Accept header.
+
+        application/json (parsed contents) is returned when the header is absent, allows any type, or lists
+        application/json. Otherwise text/csv or text/plain is chosen when listed. Returns None when nothing offered
+        is acceptable. Quality values are ignored.
+        """
+        if not accept_header or not accept_header.strip():
+            return 'application/json'
+        offered = {part.split(';')[0].strip().lower() for part in accept_header.split(',')}
+        if offered & {'application/json', '*/*', 'application/*'}:
+            return 'application/json'
+        for media_type in ('text/csv', 'text/plain'):
+            if media_type in offered:
+                return media_type
+        if 'text/*' in offered:
+            return 'text/plain'
+        return None
+
     @endpoint
     def handle_platforms_agents_configs(self, env: dict, data: dict) -> Response | None:
         """
@@ -432,9 +454,25 @@ class VUIEndpoints:
                         list_of_agents = self._rpc(CONFIGURATION_STORE, 'list_stores', external_platform=platform)
                         return Response(json.dumps(list_of_agents), 200, content_type='application/json')
                 elif not no_config_name:
-                    setting_dict = self._rpc(CONFIGURATION_STORE, 'get_config', vip_identity, config_name,
-                                             external_platform=platform)
-                    return Response(json.dumps(setting_dict), 200, content_type='application/json')
+                    # Content negotiation (see docs): JSON (parsed contents) unless the Accept header restricts the
+                    # response to text/csv (CSV configs only) or text/plain (the stored file text).
+                    response_type = self._negotiate_config_response_type(env.get('HTTP_ACCEPT'))
+                    if response_type is None:
+                        return Response(json.dumps({"Error": "Configurations are available as "
+                                                             f"{', '.join(self.CONFIG_RESPONSE_TYPES)}."}),
+                                        406, content_type='application/json')
+                    if response_type == 'application/json':
+                        parsed = self._rpc(CONFIGURATION_STORE, 'get_config', vip_identity, config_name, raw=False,
+                                           external_platform=platform)
+                        return Response(json.dumps(parsed), 200, content_type='application/json')
+                    metadata = self._rpc(CONFIGURATION_STORE, 'get_metadata', vip_identity, config_name,
+                                         external_platform=platform)
+                    stored_type = metadata.get('type')
+                    if response_type == 'text/csv' and stored_type != 'csv':
+                        return Response(json.dumps({"Error": f'Configuration "{config_name}" is stored as '
+                                                             f'{stored_type}, not csv.'}),
+                                        406, content_type='application/json')
+                    return Response(metadata['data'], 200, content_type=response_type)
             except RemoteError as e:
                 return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
 

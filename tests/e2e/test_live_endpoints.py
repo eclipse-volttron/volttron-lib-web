@@ -290,6 +290,27 @@ class TestAgentConfigs:
         rows = r.json()
         assert isinstance(rows, list) and any(row['Volttron Point Name'] == 'SampleWritableFloat1' for row in rows)
 
+    def test_get_csv_config_as_csv(self, api, P):
+        r = api.get(f'{P}/agents/{PLATFORM_DRIVER}/configs/registry_configs/fake.csv', headers={'Accept': 'text/csv'})
+        assert r.status_code == 200, r.text
+        assert r.headers['Content-Type'].startswith('text/csv')
+        assert r.text.startswith('Point Name,Volttron Point Name')
+
+    def test_get_json_config_as_text(self, api, P):
+        r = api.get(f'{P}/agents/{PLATFORM_DRIVER}/configs/devices/{DEVICE_TOPIC}', headers={'Accept': 'text/plain'})
+        assert r.status_code == 200, r.text
+        assert r.headers['Content-Type'].startswith('text/plain')
+        assert json.loads(r.text)['driver_type'] == 'fake'
+
+    def test_get_json_config_as_csv_is_406(self, api, P):
+        r = api.get(f'{P}/agents/{PLATFORM_DRIVER}/configs/devices/{DEVICE_TOPIC}', headers={'Accept': 'text/csv'})
+        assert r.status_code == 406, r.text
+
+    def test_get_config_unacceptable_type_is_406(self, api, P):
+        r = api.get(f'{P}/agents/{PLATFORM_DRIVER}/configs/devices/{DEVICE_TOPIC}',
+                    headers={'Accept': 'application/xml'})
+        assert r.status_code == 406, r.text
+
     def test_get_missing_config_is_400(self, api, P):
         assert api.get(f'{P}/agents/{PLATFORM_DRIVER}/configs/does-not-exist').status_code == 400
 
