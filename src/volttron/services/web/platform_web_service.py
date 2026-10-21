@@ -61,9 +61,6 @@ from volttron.server.server_options import ServerOptions
 from volttron.utils import jsonapi
 from volttron.utils import set_agent_identity
 
-# must be after importing of utils which imports grequest.
-import requests
-
 _log = logging.getLogger(__name__)
 
 
