@@ -557,6 +557,56 @@ def test_handle_platforms_agents_configs_post_response(mock_platform_web_service
                {'Error': f'Configuration: "{config_name}" already exists for agent: "{vip_identity}"'}
 
 
+def _platform_refusal(method):
+    return RemoteError(f"User platform.web does not have access to call platform.config_store.{method} ",
+                       exc_type='volttron.types.auth.AuthException',
+                       exc_args=[f'User platform.web does not have access to call platform.config_store.{method} '])
+
+
+@pytest.mark.parametrize('http_method, path, data, denied_rpc', [
+    ('PUT', '/vui/platforms/my_instance_name/agents/run1/configs/config', {'a': 1}, 'set_config'),
+    ('POST', '/vui/platforms/my_instance_name/agents/run1/configs?config-name=new', {'a': 1}, 'set_config'),
+    ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs/config1', {}, 'delete_config'),
+    ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs', {}, 'delete_store'),
+])
+def test_handle_platforms_agents_configs_platform_refusal_is_403(mock_platform_web_service, http_method, path, data,
+                                                                 denied_rpc):
+    """platform.web lacking the config-store capability is the web service's privilege problem, not the user's
+    credentials (401) nor a bad request (400): 403 with the platform's reason."""
+    path, _, query = path.partition('?')
+
+    def refusing_rpc(peer, meth, *args, **kwargs):
+        if peer == CONFIGURATION_STORE and meth == denied_rpc:
+            raise _platform_refusal(denied_rpc)
+        return _mock_agents_rpc(peer, meth, *args, **kwargs)
+
+    env = get_test_web_env(path, method=http_method, query_string=query, CONTENT_TYPE='application/json',
+                           HTTP_AUTHORIZATION='Bearer foo')
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = MagicMock(wraps=refusing_rpc)
+    response = vui_endpoints.handle_platforms_agents_configs(env, data)
+    assert response.status_code == 403
+    body = json.loads(response.get_data(as_text=True))
+    assert 'not authorized by the platform' in body['error']
+    assert body['detail'] == f'User platform.web does not have access to call platform.config_store.{denied_rpc}'
+
+
+def test_handle_platforms_agents_configs_other_remote_errors_keep_their_codes(mock_platform_web_service):
+    """A non-authorization RemoteError is still 400 on DELETE (handler) and 500 on PUT (decorator)."""
+    def failing_rpc(peer, meth, *args, **kwargs):
+        if meth in ('set_config', 'delete_config'):
+            raise RemoteError("builtins.ValueError('bad')", exc_type='builtins.ValueError', exc_args=['bad'])
+        return _mock_agents_rpc(peer, meth, *args, **kwargs)
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = MagicMock(wraps=failing_rpc)
+    env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs/config1', method='DELETE',
+                           HTTP_AUTHORIZATION='Bearer foo')
+    assert vui_endpoints.handle_platforms_agents_configs(env, {}).status_code == 400
+    env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs/config1', method='PUT',
+                           CONTENT_TYPE='application/json', HTTP_AUTHORIZATION='Bearer foo')
+    assert vui_endpoints.handle_platforms_agents_configs(env, {'a': 1}).status_code == 500
+
+
 @pytest.mark.parametrize('vip_identity_given, vip_identity_passed, status', [
     ('run1', 'run1', '204')
 ])

@@ -94,6 +94,11 @@ Response
 
 * **With invalid BEARER token:** ``401 Unauthorized``
 
+* **With valid BEARER token but the web service lacks the platform capability for the config store write:**
+  ``403 Forbidden``. The platform grants ``platform.web`` only control capabilities by default; an administrator
+  must grant ``platform.config_store.set_config``, ``delete_config`` and ``delete_store`` (e.g. with
+  ``vctl authz add agent platform.web --rpc-capabilities ...``) before configurations can be written.
+
 -----------------------------------------------------------------------------------------
 
 DELETE /platforms/:platform/agents/:vip_identity/configs/
@@ -126,6 +131,11 @@ Response
             }
 
 * **With invalid BEARER token:** ``401 Unauthorized``
+
+* **With valid BEARER token but the web service lacks the platform capability for the config store write:**
+  ``403 Forbidden``. The platform grants ``platform.web`` only control capabilities by default; an administrator
+  must grant ``platform.config_store.set_config``, ``delete_config`` and ``delete_store`` (e.g. with
+  ``vctl authz add agent platform.web --rpc-capabilities ...``) before configurations can be written.
 
 ------------------------------------------------------------------------------------------------
 
@@ -198,6 +208,11 @@ Response
 
 * **With invalid BEARER token:** ``401 Unauthorized``
 
+* **With valid BEARER token but the web service lacks the platform capability for the config store write:**
+  ``403 Forbidden``. The platform grants ``platform.web`` only control capabilities by default; an administrator
+  must grant ``platform.config_store.set_config``, ``delete_config`` and ``delete_store`` (e.g. with
+  ``vctl authz add agent platform.web --rpc-capabilities ...``) before configurations can be written.
+
 -----------------------------------------------------------------------------------------
 
 DELETE /platforms/:platform/agents/:vip_identity/configs/:config_name
@@ -226,6 +241,11 @@ Response
             }
 
 * **With invalid BEARER token:** ``401 Unauthorized``
+
+* **With valid BEARER token but the web service lacks the platform capability for the config store write:**
+  ``403 Forbidden``. The platform grants ``platform.web`` only control capabilities by default; an administrator
+  must grant ``platform.config_store.set_config``, ``delete_config`` and ``delete_store`` (e.g. with
+  ``vctl authz add agent platform.web --rpc-capabilities ...``) before configurations can be written.
 
 .. toctree::
     :hidden:

@@ -54,11 +54,6 @@ def platform(tmp_path_factory):
     cli.start()
     try:
         cli.add_web_user(USERNAME, PASSWORD)
-        # platform.web is only granted control.* capabilities by libauth; the config write endpoints need these
-        # (operators must grant them explicitly, this mirrors that step).
-        cli.vctl('authz', 'add', 'agent', 'platform.web', '--rpc-capabilities',
-                 'platform.config_store.set_config', 'platform.config_store.delete_config',
-                 'platform.config_store.delete_store')
         cli.install_agent(PLATFORM_DRIVER_SOURCE, vip_identity=PLATFORM_DRIVER, tag='driver')
         cli.store_config(PLATFORM_DRIVER, 'registry_configs/fake.csv', FAKE_DRIVER_DIR / 'fake.csv', csv=True)
         cli.store_config(PLATFORM_DRIVER, f'devices/{DEVICE_TOPIC}', _device_config(tmp_path_factory))
@@ -66,6 +61,17 @@ def platform(tmp_path_factory):
         yield cli
     finally:
         cli.shutdown()
+
+
+@pytest.fixture(scope='session')
+def config_write_capability(platform):
+    """Grant platform.web the config-store write capabilities. libauth grants it only control.* by default, so an
+    operator must do this before the config write endpoints work; tests that write configs request this fixture, and
+    a test that runs before any of them checks the 403 given without it."""
+    platform.vctl('authz', 'add', 'agent', 'platform.web', '--rpc-capabilities',
+                  'platform.config_store.set_config', 'platform.config_store.delete_config',
+                  'platform.config_store.delete_store')
+    return True
 
 
 @pytest.fixture(scope='session')

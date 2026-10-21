@@ -88,6 +88,22 @@ class LockError(Exception):
     pass
 
 
+def _is_authorization_error(e: Exception) -> bool:
+    """True when a remote call failed because the platform refused the web service itself (an AuthException raised
+    on the peer, e.g. platform.web lacks the capability for config.store.set_config). This is distinct from the web
+    user's own authorization, which @endpoint checks before dispatch."""
+    exc_type = e.exc_info.get('exc_type', '') if isinstance(e, RemoteError) and isinstance(e.exc_info, dict) else ''
+    return exc_type.endswith('AuthException') or 'AuthException(' in str(e)
+
+
+def _forbidden_by_platform_response(e: Exception) -> Response:
+    exc_args = e.exc_info.get('exc_args') if isinstance(e, RemoteError) and isinstance(e.exc_info, dict) else None
+    detail = str(exc_args[0]).strip() if exc_args else str(e)
+    return Response(json.dumps({'error': 'The web service is not authorized by the platform to perform this action. '
+                                         'A platform administrator must grant it the required capability.',
+                                'detail': detail}), 403, content_type='application/json')
+
+
 def endpoint(func):
     """Authenticate and authorize a VUI request before dispatching to the wrapped handler.
 
@@ -125,6 +141,9 @@ def endpoint(func):
         except TimeoutError as e:
             return Response(json.dumps({'error': f'Request Timed Out: {e}'}), 504, content_type='application/json')
         except Exception as e:
+            if _is_authorization_error(e):
+                _log.warning(f"Platform refused {env.get('REQUEST_METHOD')} {env.get('PATH_INFO')}: {e}")
+                return _forbidden_by_platform_response(e)
             return Response(json.dumps({'error': f'Unexpected Error: {e}'}), 500, content_type='application/json')
     return verify_and_dispatch
 
@@ -474,6 +493,8 @@ class VUIEndpoints:
                                         406, content_type='application/json')
                     return Response(metadata['data'], 200, content_type=response_type)
             except RemoteError as e:
+                if _is_authorization_error(e):
+                    return _forbidden_by_platform_response(e)
                 return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
 
         elif request_method == 'PUT' and (not no_config_name):
@@ -507,6 +528,8 @@ class VUIEndpoints:
                     self._rpc(CONFIGURATION_STORE, 'delete_store', vip_identity, external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
+                    if _is_authorization_error(e):
+                        return _forbidden_by_platform_response(e)
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
             else:
                 try:
@@ -514,6 +537,8 @@ class VUIEndpoints:
                               external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
+                    if _is_authorization_error(e):
+                        return _forbidden_by_platform_response(e)
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
 
     @endpoint

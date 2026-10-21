@@ -314,7 +314,18 @@ class TestAgentConfigs:
     def test_get_missing_config_is_400(self, api, P):
         assert api.get(f'{P}/agents/{PLATFORM_DRIVER}/configs/does-not-exist').status_code == 400
 
-    def test_config_crud(self, api, P):
+    def test_config_write_without_capability_is_403(self, api, P):
+        # Runs before test_config_crud requests the grant: platform.web has only libauth's default control.*
+        # capabilities, so the platform refuses the write and the web reports its own lack of privilege.
+        r = api.put(f'{P}/agents/e2e.config.agent/configs/denied', json={'a': 1})
+        assert r.status_code == 403, r.text
+        body = r.json()
+        assert 'not authorized by the platform' in body['error']
+        assert 'platform.config_store.set_config' in body['detail']
+        assert api.delete(f'{P}/agents/e2e.config.agent/configs/denied').status_code == 403
+        assert api.delete(f'{P}/agents/e2e.config.agent/configs').status_code == 403
+
+    def test_config_crud(self, api, P, config_write_capability):
         agent = 'e2e.config.agent'
         base = f'{P}/agents/{agent}/configs'
         r = api.post(base, params={'config-name': 'settings'}, json={'a': 1})
