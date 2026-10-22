@@ -410,8 +410,12 @@ class TestAgentConfigs:
         assert set(api.get(base).json()['links']) == {'settings', 'notes'}
         assert api.delete(f'{base}/settings').status_code == 204
         assert api.get(f'{base}/settings').status_code == 400
-        assert api.delete(base).status_code == 204
+        r = api.delete(base)                                     # 'notes' is still in the store
+        assert r.status_code == 409, r.text
+        assert r.json()['configs'] == ['notes']
+        assert api.delete(base, params={'all': 'true'}).status_code == 204
         assert agent not in api.get(f'{P}/agents/-/configs').json()
+        assert api.delete(base).status_code == 204               # deleting an empty or absent store needs no consent
 
     def test_config_rejects_unknown_content_type(self, api, P):
         r = api.put(f'{P}/agents/e2e.config.agent/configs/x', data='<x/>', headers={'Content-Type': 'application/xml'})

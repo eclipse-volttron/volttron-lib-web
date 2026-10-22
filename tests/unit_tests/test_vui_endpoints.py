@@ -572,7 +572,7 @@ def _platform_refusal(method):
     ('PUT', '/vui/platforms/my_instance_name/agents/run1/configs/config', {'a': 1}, 'set_config'),
     ('POST', '/vui/platforms/my_instance_name/agents/run1/configs?config-name=new', {'a': 1}, 'set_config'),
     ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs/config1', {}, 'delete_config'),
-    ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs', {}, 'delete_store'),
+    ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs?all=true', {}, 'delete_store'),   # past the 409 guard
 ])
 def test_handle_platforms_agents_configs_platform_refusal_is_403(mock_platform_web_service, http_method, path, data,
                                                                  denied_rpc):
@@ -612,20 +612,27 @@ def test_handle_platforms_agents_configs_other_remote_errors_keep_their_codes(mo
     assert vui_endpoints.handle_platforms_agents_configs(env, {'a': 1}).status_code == 500
 
 
-@pytest.mark.parametrize('vip_identity_given, vip_identity_passed, status', [
-    ('run1', 'run1', '204')
+@pytest.mark.parametrize('vip_identity_given, vip_identity_passed, query, status', [
+    ('run1', 'run1', '', '409'),                 # run1 still holds config1 and config2
+    ('run1', 'run1', 'all=true', '204'),         # explicit consent removes them with the store
+    ('stopped1', 'stopped1', '', '204'),         # an empty store needs no consent
 ])
 def test_handle_platforms_agents_configs_delete_response(mock_platform_web_service, vip_identity_given,
-                                                         vip_identity_passed, status):
+                                                         vip_identity_passed, query, status):
     path = f'/vui/platforms/my_instance_name/agents/{vip_identity_given}/configs'
-    env = get_test_web_env(path, method='DELETE', HTTP_AUTHORIZATION='Bearer foo')
+    env = get_test_web_env(path, method='DELETE', query_string=query, HTTP_AUTHORIZATION='Bearer foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
     vui_endpoints._rpc = MagicMock(wraps=_mock_agents_rpc)
     response = vui_endpoints.handle_platforms_agents_configs(env, {})
     check_response_codes(response, status)
+    delete_calls = [c for c in vui_endpoints._rpc.call_args_list if c.args[:2] == (CONFIGURATION_STORE, 'delete_store')]
     if status == '204':
-        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'delete_store', vip_identity_passed,
-                                                       external_platform='my_instance_name')])
+        assert delete_calls == [mock.call(CONFIGURATION_STORE, 'delete_store', vip_identity_passed,
+                                          external_platform='my_instance_name')]
+    else:
+        assert not delete_calls
+        body = json.loads(response.get_data(as_text=True))
+        assert 'all=true' in body['error'] and body['configs'] == ['config1', 'config2']
 
 
 @pytest.mark.parametrize('vip_identity, config_name_given, config_name_passed, status', [

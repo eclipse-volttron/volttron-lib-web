@@ -542,6 +542,16 @@ class VUIEndpoints:
         elif request_method == 'DELETE':
             if no_config_name:
                 try:
+                    # Removing a store that still holds configurations is a conflict unless all=true is given.
+                    if not self._to_bool(query_params.get('all', False)):
+                        remaining = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
+                                              external_platform=platform)
+                        if remaining:
+                            return Response(json.dumps({'error': f'The configuration store for "{vip_identity}" still '
+                                                                 f'holds {len(remaining)} configuration(s). Pass '
+                                                                 f'all=true to delete them with the store.',
+                                                        'configs': sorted(remaining)}),
+                                            409, content_type='application/json')
                     self._rpc(CONFIGURATION_STORE, 'delete_store', vip_identity, external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
