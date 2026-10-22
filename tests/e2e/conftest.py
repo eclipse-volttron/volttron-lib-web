@@ -16,6 +16,7 @@ from platform_cli import PlatformCLI
 MODULAR = Path(__file__).resolve().parents[3]
 PLATFORM_DRIVER_SOURCE = str(MODULAR / 'drivers' / 'platform-driver-agent')
 FAKE_DRIVER_DIR = MODULAR / 'drivers' / 'interfaces' / 'fake'
+REGISTRY_CONFIG = 'registry_configs/fake.csv'
 
 PLATFORM_DRIVER = 'platform.driver'
 LISTENER = 'listener'
@@ -30,7 +31,12 @@ RPC_ALLOW_LIST = [
 
 
 def _device_config(tmp_path_factory) -> Path:
-    """The fake driver's sample device config, with duplicate remotes allowed.
+    """The fake driver's sample device config, pointed at the registry stored by the platform fixture, with duplicate
+    remotes allowed.
+
+    The registry path is set explicitly because the sample ``fake.config`` differs between fake-driver releases
+    (``config://fake.csv`` upstream, ``config://registry_configs/fake.csv`` in newer checkouts); the fixture must match
+    wherever ``platform`` stores the CSV.
 
     Workaround (2026-10-14): platform_driver.agent._get_or_create_remote passes the generic RemoteConfig to the
     interface's unique_remote_id, but the fake interface reads ``remote_id`` from its own FakeRemoteConfig, so
@@ -38,6 +44,7 @@ def _device_config(tmp_path_factory) -> Path:
     base implementation is used instead.
     """
     config = json.loads((FAKE_DRIVER_DIR / 'fake.config').read_text())
+    config['registry_config'] = f'config://{REGISTRY_CONFIG}'
     config['allow_duplicate_remotes'] = True
     path = tmp_path_factory.mktemp('configs') / 'fake-device.json'
     path.write_text(json.dumps(config))
@@ -55,7 +62,7 @@ def platform(tmp_path_factory):
     try:
         cli.add_web_user(USERNAME, PASSWORD)
         cli.install_agent(PLATFORM_DRIVER_SOURCE, vip_identity=PLATFORM_DRIVER, tag='driver')
-        cli.store_config(PLATFORM_DRIVER, 'registry_configs/fake.csv', FAKE_DRIVER_DIR / 'fake.csv', csv=True)
+        cli.store_config(PLATFORM_DRIVER, REGISTRY_CONFIG, FAKE_DRIVER_DIR / 'fake.csv', csv=True)
         cli.store_config(PLATFORM_DRIVER, f'devices/{DEVICE_TOPIC}', _device_config(tmp_path_factory))
         cli.install_agent('volttron-listener', vip_identity=LISTENER, tag='listener')
         yield cli
