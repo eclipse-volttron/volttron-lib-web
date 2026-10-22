@@ -290,6 +290,13 @@ class TestAgents:
     def test_select_invalid_regex_is_400(self, api, P):
         assert api.get(f'{P}/agents/-/running', params={'regex': '('}).status_code == 400
 
+    def test_select_without_filter_is_400(self, api, P):
+        for method in ('get', 'put', 'delete'):
+            r = getattr(api, method)(f'{P}/agents/-/running')
+            assert r.status_code == 400, r.text
+            assert 'requires a tag or regex' in r.json()['error']
+        assert api.get(f'{P}/agents/{LISTENER}/running').json() == {'running': True}   # nothing was stopped
+
     def test_select_stop_and_start_by_tag(self, api, P):
         r = api.delete(f'{P}/agents/-/running', params={'tag': 'listener'})
         assert r.status_code == 200, r.text

@@ -134,13 +134,19 @@ devices endpoints use ``-`` for a topic segment:
 * ``include-hidden`` (default=false): also consider the platform's own services (running peers that are not installed
   agents). They are excluded by default so that a broad pattern cannot stop or disable the platform itself.
 
-Parameters combine by intersection. The response is a JSON object keyed by VIP identity, one entry per selected agent,
-using the same fields as the single-agent form of the route. A selection that matches no agent returns ``200 OK`` with
-an empty object. For ``PUT`` and ``DELETE`` the action is applied to each selected agent independently; each entry
+At least one of ``tag`` or ``regex`` is required: a wildcard request with neither is ``400 Bad Request``, so a
+forgotten filter can never act on more agents than intended. To address every tagged agent use ``tag=*``; to address
+every installed agent use ``regex=.``. Parameters combine by intersection. The response is a JSON object keyed by VIP
+identity, one entry per selected agent, using the same fields as the single-agent form of the route. A selection that
+matches no agent returns ``200 OK`` with an empty object. For ``PUT`` and ``DELETE`` the action is applied to each selected agent independently; each entry
 gains an ``error`` field, ``null`` on success or a message for that agent, and one agent's failure does not stop the
 others. Platform services selected with ``include-hidden`` cannot be started, stopped or prioritized and report an
 error. Writes to a selection are idempotent: ``PUT .../-/running`` starts only the agents that are not running (or
 restarts all of them with ``restart=true``) and ``DELETE .../-/running`` stops only those that are.
+
+Example: stop every agent on the platform that carries a tag::
+
+    DELETE /vui/platforms/:platform/agents/-/running?tag=*
 
 Example: stop every agent that carries a tag beginning with ``ilc``::
 

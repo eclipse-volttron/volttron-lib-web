@@ -760,6 +760,7 @@ class VUIEndpoints:
     #   tag=<glob>          fnmatch against the agent's tag; 'tag=*' is every agent that has a tag.
     #   regex=<pattern>     re.search against the VIP identity.
     #   include-hidden=true also consider platform services (running peers that are not installed agents).
+    # At least one of tag or regex is required, so that a request with no filter is an error rather than "everything".
     # Parameters combine by intersection. Responses are keyed by identity; writes act on each agent independently
     # and report a per-agent error rather than aborting the batch.
     WILDCARD_IDENTITY = '-'
@@ -795,6 +796,12 @@ class VUIEndpoints:
                                 content_type='application/json')
         include_hidden = self._to_bool(query_params.get('include-hidden', False))
         tag_glob, regex = query_params.get('tag'), query_params.get('regex')
+        if tag_glob is None and regex is None:
+            # Selecting everything must be said explicitly, so a forgotten filter cannot act on more than intended.
+            return {}, Response(json.dumps({'error': f"The wildcard identity '{self.WILDCARD_IDENTITY}' requires a tag "
+                                                     "or regex query parameter. Use tag=* for every tagged agent or "
+                                                     "regex=. for every installed agent."}),
+                                400, content_type='application/json')
         records = self._agent_records(platform, include_hidden)
         try:
             return {i: r for i, r in records.items() if self._agent_matches(r, tag_glob, regex)}, None

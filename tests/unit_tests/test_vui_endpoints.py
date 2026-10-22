@@ -1256,8 +1256,8 @@ EXT = {'external_platform': 'my_instance_name'}
 
 
 @pytest.mark.parametrize('query, expected', [
-    ('', {'run1', 'run2', 'stopped1', 'stopped2'}),                       # every installed agent
     ('tag=*', {'run1', 'run2', 'stopped1', 'stopped2'}),                  # every tagged agent (all have tags here)
+    ('regex=.', {'run1', 'run2', 'stopped1', 'stopped2'}),                # every installed agent
     ('tag=r*', {'run1', 'run2'}),
     ('tag=st2', {'stopped2'}),
     ('regex=^stopped', {'stopped1', 'stopped2'}),
@@ -1273,6 +1273,15 @@ def test_running_selection_get(mock_platform_web_service, query, expected):
     assert set(body) == expected
     for identity, entry in body.items():
         assert entry == {'running': identity in ('run1', 'run2', 'hid1', 'hid2')}
+
+
+@pytest.mark.parametrize('method', ['GET', 'PUT', 'DELETE'])
+def test_selection_without_filter_is_400(mock_platform_web_service, method):
+    """A forgotten filter must not act on every agent: the wildcard requires tag or regex."""
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', method, 'include-hidden=true')
+    assert code == 400 and 'requires a tag or regex' in body['error']
+    assert not [c for c in vui._rpc.call_args_list if c.args[1] in ('start_agent', 'stop_agent', 'restart_agent')]
 
 
 def test_selection_invalid_regex_is_400(mock_platform_web_service):
