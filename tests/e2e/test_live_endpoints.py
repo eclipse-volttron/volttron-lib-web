@@ -264,6 +264,75 @@ class TestAgents:
         assert api.get(f'{P}/agents/nobody/running').status_code == 400
 
 
+    # ---- selecting several agents with the '-' wildcard ----------------------------------------------------------
+    def test_wildcard_agent_links(self, api, P):
+        r = api.get(f'{P}/agents/-')
+        assert r.status_code == 200
+        assert set(r.json()['links']) == {'running', 'enabled', 'status', 'health'}
+
+    def test_select_running_by_tag(self, api, P):
+        r = api.get(f'{P}/agents/-/running', params={'tag': 'listener'})
+        assert r.status_code == 200, r.text
+        assert r.json() == {LISTENER: {'running': True}}
+
+    def test_select_any_tagged_excludes_platform_services(self, api, P):
+        body = api.get(f'{P}/agents/-/running', params={'tag': '*'}).json()
+        assert {LISTENER, PLATFORM_DRIVER} <= set(body)          # installed, tagged agents (the driver is one)
+        hidden = {'platform.web', 'platform.health', 'platform.control', 'platform.auth', 'platform.config_store'}
+        assert hidden.isdisjoint(body)                            # platform services never match without include-hidden
+
+    def test_select_by_regex_with_hidden(self, api, P):
+        body = api.get(f'{P}/agents/-/running',
+                       params={'regex': r'^platform\.(web|health)$', 'include-hidden': 'true'}).json()
+        assert set(body) == {'platform.web', 'platform.health'}
+        assert all(v == {'running': True} for v in body.values())
+
+    def test_select_invalid_regex_is_400(self, api, P):
+        assert api.get(f'{P}/agents/-/running', params={'regex': '('}).status_code == 400
+
+    def test_select_stop_and_start_by_tag(self, api, P):
+        r = api.delete(f'{P}/agents/-/running', params={'tag': 'listener'})
+        assert r.status_code == 200, r.text
+        assert r.json() == {LISTENER: {'running': False, 'error': None}}
+        assert api.get(f'{P}/agents/{LISTENER}/running').json() == {'running': False}
+        r = api.put(f'{P}/agents/-/running', params={'tag': 'listener'})
+        assert r.status_code == 200, r.text
+        assert r.json()[LISTENER]['error'] is None
+        wait_until(lambda: api.get(f'{P}/agents/{LISTENER}/running').json()['running'], message='listener restart')
+
+    def test_select_enabled_by_tag(self, api, P):
+        r = api.put(f'{P}/agents/-/enabled', params={'tag': 'listener', 'priority': '20'})
+        assert r.status_code == 200, r.text
+        assert r.json() == {LISTENER: {'status': True, 'priority': 20, 'error': None}}
+        assert api.get(f'{P}/agents/-/enabled', params={'tag': 'listener'}).json() == \
+               {LISTENER: {'status': True, 'priority': 20}}
+        r = api.delete(f'{P}/agents/-/enabled', params={'tag': 'listener'})
+        assert r.json() == {LISTENER: {'status': False, 'priority': None, 'error': None}}
+
+    def test_select_status(self, api, P):
+        body = api.get(f'{P}/agents/-/status', params={'tag': '*'}).json()
+        assert {LISTENER, PLATFORM_DRIVER} <= set(body)
+        assert body[LISTENER]['running'] is True and body[LISTENER]['tag'] == 'listener'
+
+    def test_agents_list_tag_filter(self, api, P):
+        assert set(api.get(f'{P}/agents', params={'tag': 'listener'}).json()['links']) == {LISTENER}
+        assert set(api.get(f'{P}/agents', params={'regex': r'^platform\.dr'}).json()['links']) == {PLATFORM_DRIVER}
+
+    # ---- health ----------------------------------------------------------------------------------------------------
+    def test_agent_health(self, api, P):
+        r = api.get(f'{P}/agents/{LISTENER}/health')
+        assert r.status_code == 200, r.text
+        assert {'peer', 'connected', 'last_heartbeat', 'message'} <= set(r.json())
+        assert api.get(f'{P}/agents/no.such.agent/health').status_code == 400
+
+    def test_agent_health_selection_and_platform_health(self, api, P):
+        assert set(api.get(f'{P}/agents/-/health', params={'tag': 'listener'}).json()) == {LISTENER}
+        body = api.get(f'{P}/health').json()
+        # The health service lists the agents that report health (the listener sends heartbeats; the driver does not).
+        assert LISTENER in body and {'peer', 'connected', 'last_heartbeat', 'message'} <= set(body[LISTENER])
+        assert api.get('/vui/platforms/nope/health').status_code == 400
+
+
 # ---------------------------------------------------------------------------- /agents/:id/configs
 
 class TestAgentConfigs:

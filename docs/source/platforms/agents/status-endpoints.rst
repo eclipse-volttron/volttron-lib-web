@@ -11,6 +11,13 @@ a single agent running on a VOLTTRON platform. Only a GET method is currently im
     All Platforms Agents Status endpoints require a JWT bearer token obtained through the
     ``POST /authenticate`` or ``PUT /authenticate`` endpoints.
 
+
+.. note::
+
+    ``:agent`` may be the wildcard ``-`` to address several agents chosen with the ``tag``, ``regex`` and
+    ``include-hidden`` query parameters; the response is then keyed by VIP identity and ``PUT``/``DELETE`` report a
+    per-agent ``error``. See :ref:`Platforms-Agents-Selection`.
+
 --------------
 
 GET /platforms/:platform/agents/:agent/status

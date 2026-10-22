@@ -134,6 +134,8 @@ following sections:
           on the platform.
         - :ref:`Enabled <Platforms-Agents-Enabled-Endpoints>`: Endpoints for enabling, disabling, and setting the
           start priority of agents on the platform.
+        - :ref:`Health <Platforms-Agents-Health-Endpoints>`: Endpoints for retrieving the health of agents on the
+          platform.
         - :ref:`RPC <Platforms-Agents-Rpc-Endpoints>`: Endpoints allowing, discovery, inspection, and calling of
           remote procedure calls to agents running on the platform.
         - :ref:`Running <Platforms-Agents-Running-Endpoints>`: Endpoints for starting and stopping agents on the
@@ -142,6 +144,8 @@ following sections:
           running on the platform.
         - :ref:`Tag <Platforms-Agents-Tag-Endpoints>`: Endpoints for getting, setting, and deleting the tag of agents.
     - :ref:`Devices <Platforms-Devices-Endpoints>`: Endpoints for getting, setting, and resetting devices on the
+      platform.
+    - :ref:`Health <Platforms-Health-Endpoints>`: Endpoints for retrieving the health of every agent connected to the
       platform.
     - :ref:`Historians <Platforms-Historians-Endpoints>`: Endpoints for querying data from historians on the platform.
     - :ref:`Pubsub <Platforms-Pubsub-Endpoints>`: Endpoints for subscribing and publishing to the message bus on the

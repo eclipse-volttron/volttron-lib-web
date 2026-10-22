@@ -32,7 +32,7 @@ from werkzeug import Response
 
 # mock.patch('volttron.services.web.vui_endpoints.endpoint', lambda x: x).start()
 
-from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_DRIVER
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_DRIVER, PLATFORM_HEALTH
 
 from volttron.services.web.rpc_proxy_policy import RpcProxyPolicy
 from volttron.lib.tree import DeviceTree
@@ -321,6 +321,11 @@ def _mock_agents_rpc(peer, meth, *args, external_platform=None, **kwargs):
         return [['1', '', [10, None]], ['2', '', [11, None]], ['4', '', [12, 0]]]
     elif peer == CONTROL and meth == 'peerlist':
         return ['run1', 'run2', 'hid1', 'hid2']
+    elif peer == PLATFORM_HEALTH and meth == 'get_platform_health':
+        return {i: {'peer': i, 'service_agent': i.startswith('hid'), 'connected': '2026-10-21T00:00:00',
+                    'last_heartbeat': '2026-10-21T00:00:05', 'message': 'GOOD'} for i in ['run1', 'run2', 'hid1', 'hid2']}
+    elif peer == CONTROL and meth in ('start_agent', 'stop_agent', 'restart_agent', 'prioritize_agent'):
+        return None
     elif peer == CONTROL and meth == 'inspect':
         return {'methods': ['list_agents', 'peerlist', 'status_agents']}
     elif peer == CONTROL and meth == 'status_agents.inspect':
@@ -1223,3 +1228,166 @@ def test_handle_platforms_status_delete_response(mock_platform_web_service):
     check_response_codes(response, '204')
     vui_endpoints._rpc.assert_has_calls([mock.call(CONTROL, 'clear_status', True,
                                                    external_platform='my_instance_name')])
+
+
+# ---------------------------------------------------------------------------- agent selection ('-' wildcard)
+
+def _vui_with_agents(mock_platform_web_service):
+    vui = VUIEndpoints(mock_platform_web_service)
+    vui._rpc = MagicMock(wraps=_mock_agents_rpc)
+    return vui
+
+
+def _call(vui, handler, path, method='GET', query=''):
+    env = get_test_web_env(path, method=method, query_string=query, HTTP_AUTHORIZATION='Bearer foo')
+    response = getattr(vui, handler)(env, {})
+    return response.status_code, json.loads(response.get_data(as_text=True))
+
+
+P = '/vui/platforms/my_instance_name'
+EXT = {'external_platform': 'my_instance_name'}
+
+
+@pytest.mark.parametrize('query, expected', [
+    ('', {'run1', 'run2', 'stopped1', 'stopped2'}),                       # every installed agent
+    ('tag=*', {'run1', 'run2', 'stopped1', 'stopped2'}),                  # every tagged agent (all have tags here)
+    ('tag=r*', {'run1', 'run2'}),
+    ('tag=st2', {'stopped2'}),
+    ('regex=^stopped', {'stopped1', 'stopped2'}),
+    ('tag=*&regex=1$', {'run1', 'stopped1'}),                            # parameters intersect
+    ('tag=nomatch', set()),
+    ('include-hidden=true&regex=^hid', {'hid1', 'hid2'}),
+    ('regex=^hid', set()),                                                # hidden peers excluded by default
+])
+def test_running_selection_get(mock_platform_web_service, query, expected):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', query=query)
+    assert code == 200
+    assert set(body) == expected
+    for identity, entry in body.items():
+        assert entry == {'running': identity in ('run1', 'run2', 'hid1', 'hid2')}
+
+
+def test_selection_invalid_regex_is_400(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', query='regex=(')
+    assert code == 400 and 'Invalid regex' in body['error']
+
+
+def test_selection_unknown_platform_is_400(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', '/vui/platforms/nope/agents/-/running', query='tag=*')
+    assert code == 400 and 'Unknown platform' in body['error']
+
+
+def test_running_selection_put_starts_only_stopped_agents(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'PUT', 'tag=*')
+    assert code == 200 and set(body) == {'run1', 'run2', 'stopped1', 'stopped2'}
+    started = {c.args[2] for c in vui._rpc.call_args_list if c.args[:2] == (CONTROL, 'start_agent')}
+    assert started == {'3', '4'}                                           # the running agents are left alone
+    assert all(entry['error'] is None for entry in body.values())
+
+
+def test_running_selection_put_restart(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'PUT', 'tag=r1&restart=true')
+    assert code == 200 and list(body) == ['run1']
+    vui._rpc.assert_any_call(CONTROL, 'restart_agent', '1', **EXT)
+
+
+def test_running_selection_delete_stops_only_running_agents(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'DELETE', 'tag=*')
+    stopped = {c.args[2] for c in vui._rpc.call_args_list if c.args[:2] == (CONTROL, 'stop_agent')}
+    assert code == 200 and stopped == {'1', '2'}
+
+
+def test_running_selection_reports_per_agent_errors(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    # Hidden peers are not installed agents and cannot be started or stopped; the batch still completes.
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'DELETE',
+                       'include-hidden=true&regex=^(hid1|run1)$')
+    assert code == 200
+    assert body['run1']['error'] is None
+    assert 'not an installed agent' in body['hid1']['error']
+
+
+def test_enabled_selection_get(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', query='tag=*')
+    assert code == 200
+    assert body == {'run1': {'status': False, 'priority': None}, 'run2': {'status': True, 'priority': 50},
+                    'stopped1': {'status': False, 'priority': None}, 'stopped2': {'status': True, 'priority': 35}}
+
+
+def test_enabled_selection_put_and_delete(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', 'PUT', 'tag=st*&priority=10')
+    assert code == 200
+    assert body == {'stopped1': {'status': True, 'priority': 10, 'error': None},
+                    'stopped2': {'status': True, 'priority': 10, 'error': None}}
+    vui._rpc.assert_any_call(CONTROL, 'prioritize_agent', '3', '10', **EXT)
+    vui._rpc.assert_any_call(CONTROL, 'prioritize_agent', '4', '10', **EXT)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', 'DELETE', 'tag=r2')
+    assert code == 200 and body == {'run2': {'status': False, 'priority': None, 'error': None}}
+    vui._rpc.assert_any_call(CONTROL, 'prioritize_agent', '2', None, **EXT)
+
+
+def test_enabled_selection_put_rejects_bad_priority(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', 'PUT', 'tag=*&priority=100')
+    assert code == 400 and 'Priority' in body['error']
+    assert not [c for c in vui._rpc.call_args_list if c.args[:2] == (CONTROL, 'prioritize_agent')]
+
+
+def test_status_selection_get(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_status', f'{P}/agents/-/status', query='tag=r*')
+    assert code == 200 and set(body) == {'run1', 'run2'}
+    assert body['run1']['running'] is True and body['run1']['pid'] == 10
+
+
+@pytest.mark.parametrize('identity, code, keys', [
+    ('run1', 200, {'peer', 'service_agent', 'connected', 'last_heartbeat', 'message'}),
+    ('stopped1', 400, {'error'}),                                          # not connected: no health entry
+])
+def test_agent_health(mock_platform_web_service, identity, code, keys):
+    vui = _vui_with_agents(mock_platform_web_service)
+    got, body = _call(vui, 'handle_platforms_agents_health', f'{P}/agents/{identity}/health')
+    assert got == code and set(body) == keys
+
+
+def test_agent_health_selection(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_health', f'{P}/agents/-/health', query='tag=*')
+    assert code == 200 and set(body) == {'run1', 'run2'}                 # stopped agents have no health entry
+    code, body = _call(vui, 'handle_platforms_agents_health', f'{P}/agents/-/health',
+                       query='include-hidden=true&regex=^hid')
+    assert code == 200 and set(body) == {'hid1', 'hid2'}
+
+
+def test_platform_health(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_health', f'{P}/health')
+    assert code == 200 and set(body) == {'run1', 'run2', 'hid1', 'hid2'}
+    code, body = _call(vui, 'handle_platforms_health', '/vui/platforms/nope/health')
+    assert code == 400
+
+
+def test_agents_list_tag_and_regex_filters(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='tag=r*')
+    assert code == 200 and set(body['links']) == {'run1', 'run2'}
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='agent-state=installed&tag=*')
+    assert set(body['links']) == {'run1', 'run2', 'stopped1', 'stopped2'}
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='agent-state=installed&regex=^stopped')
+    assert set(body['links']) == {'stopped1', 'stopped2'}
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='regex=(')
+    assert code == 400
+
+
+def test_wildcard_agent_links_only_selection_routes(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_agent', f'{P}/agents/-')
+    assert code == 200 and set(body['links']) == {'running', 'enabled', 'status', 'health'}

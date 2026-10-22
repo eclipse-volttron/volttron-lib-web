@@ -23,6 +23,7 @@
 # }}}
 
 import functools
+import fnmatch
 import inspect
 import os
 import re
@@ -54,7 +55,7 @@ def _parse_query_params(query_string: str, allow_multiple: tuple = ()) -> dict:
 from werkzeug import Response
 
 
-from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_WEB
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_HEALTH, PLATFORM_WEB
 from volttron.client.vip.agent.subsystems.query import Query
 from volttron.utils.context import ClientContext
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
@@ -187,7 +188,7 @@ class VUIEndpoints:
                             'endpoint-active': False,
                         },
                         'health': {
-                            'endpoint-active': False,
+                            'endpoint-active': True,
                         },
                         'pubsub': {
                             'endpoint-active': False,
@@ -218,7 +219,7 @@ class VUIEndpoints:
                         'endpoint-active': False,
                     },
                     'health': {
-                        'endpoint-active': False,
+                        'endpoint-active': True,
                     },
                     'historians': {
                         'endpoint-active': True,
@@ -273,11 +274,13 @@ class VUIEndpoints:
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/configs/?$'), 'callable', self.handle_platforms_agents_configs),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/configs/.*/?$'), 'callable', self.handle_platforms_agents_configs),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/enabled/?$'), 'callable', self.handle_platforms_agents_enabled),
+            (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/health/?$'), 'callable', self.handle_platforms_agents_health),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/rpc/?$'), 'callable', self.handle_platforms_agents_rpc),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/rpc/[^/]+/?$'), 'callable', self.handle_platforms_agents_rpc_method),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/running/?$'), 'callable', self.handle_platforms_agents_running),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/status/?$'), 'callable', self.handle_platforms_agents_status),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/tag/?$'), 'callable', self.handle_platforms_agents_tag),
+            (re.compile('^/vui/platforms/[^/]+/health/?$'), 'callable', self.handle_platforms_health),
             (re.compile('^/vui/platforms/[^/]+/devices/?$'), 'callable', self.handle_platforms_devices),
             (re.compile('^/vui/platforms/[^/]+/devices/.*/?$'), 'callable', self.handle_platforms_devices),
             (re.compile('^/vui/platforms/[^/]+/historians/?$'), 'callable', self.handle_platforms_historians),
@@ -352,6 +355,14 @@ class VUIEndpoints:
                 return Response(json.dumps(error), 400, content_type='application/json')
             else:
                 agents = self._get_agents(platform, agent_state, include_hidden)
+                tag_glob, regex = query_params.get('tag'), query_params.get('regex')
+                if tag_glob is not None or regex is not None:
+                    records = self._agent_records(platform, include_hidden=True)
+                    try:
+                        agents = [a for a in agents
+                                  if self._agent_matches(records.get(a, {'identity': a}), tag_glob, regex)]
+                    except re.error as e:
+                        return Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
                 return Response(json.dumps(self._links(path_info, agents)), 200,
                                 content_type='application/json')
 
@@ -368,6 +379,8 @@ class VUIEndpoints:
         query_params = _parse_query_params(env['QUERY_STRING'])
         restart = self._to_bool(query_params.get('restart', 'false'))
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/running/?$', path_info).groups()
+        if vip_identity == self.WILDCARD_IDENTITY:
+            return self._running_for_selection(platform, query_params, request_method, restart)
         uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
         if not uuid:
             return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}), 400,
@@ -408,6 +421,10 @@ class VUIEndpoints:
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/?$', path_info).groups()
         if request_method == 'GET':
             active_routes = self._find_active_sub_routes(['vui', 'platforms', 'agents'], path_info=path_info)
+            if vip_identity == self.WILDCARD_IDENTITY:
+                # The wildcard addresses a selection of agents; only the routes that act on a selection apply.
+                active_routes['links'] = {k: v for k, v in active_routes['links'].items() if k in self.SELECTION_ROUTES}
+                return Response(json.dumps(active_routes), 200, content_type='application/json')
             agent_state = self._get_agent_state(platform, vip_identity)
             # If agent is not installed, only allow configs endpoint.
             if agent_state == 'not_installed' and 'configs' in active_routes['links'].keys():
@@ -554,6 +571,8 @@ class VUIEndpoints:
         query_params = _parse_query_params(env['QUERY_STRING'])
         priority = query_params.get('priority', '50')
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/enabled/?$', path_info).groups()
+        if vip_identity == self.WILDCARD_IDENTITY:
+            return self._enabled_for_selection(platform, query_params, request_method, priority)
 
         if request_method == 'GET':
             try:
@@ -661,6 +680,13 @@ class VUIEndpoints:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/status/?$', path_info).groups()
+        if request_method == 'GET' and vip_identity == self.WILDCARD_IDENTITY:
+            selected, error = self._select_agents(platform, _parse_query_params(env['QUERY_STRING']))
+            if error:
+                return error
+            status_dict = self._get_status(platform)
+            return Response(json.dumps({i: status_dict[i] for i in selected if i in status_dict}), 200,
+                            content_type='application/json')
 
         if request_method == 'GET':
             try:
@@ -674,6 +700,159 @@ class VUIEndpoints:
             except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent  {e}'}),
                                 400, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_agents_health(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/agents/:vip_identity/health/
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/health/?$', path_info).groups()
+        if request_method == 'GET':
+            if vip_identity == self.WILDCARD_IDENTITY:
+                selected, error = self._select_agents(platform, _parse_query_params(env['QUERY_STRING']))
+                if error:
+                    return error
+                health = self._rpc(PLATFORM_HEALTH, 'get_platform_health', external_platform=platform) or {}
+                return Response(json.dumps({i: health[i] for i in selected if i in health}), 200,
+                                content_type='application/json')
+            health = self._rpc(PLATFORM_HEALTH, 'get_platform_health', external_platform=platform) or {}
+            if vip_identity not in health:
+                return Response(json.dumps({'error': f'No health information for agent "{vip_identity}".'}), 400,
+                                content_type='application/json')
+            return Response(json.dumps(health[vip_identity]), 200, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_health(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/health/
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        platform = re.match('^/vui/platforms/([^/]+)/health/?$', path_info).groups()[0]
+        if request_method == 'GET':
+            if platform not in self._get_platforms():
+                return Response(json.dumps({'error': f'Unknown platform: {platform}'}), 400,
+                                content_type='application/json')
+            health = self._rpc(PLATFORM_HEALTH, 'get_platform_health', external_platform=platform) or {}
+            return Response(json.dumps(health), 200, content_type='application/json')
+
+    # ------------------------------------------------------------------ selecting several agents at once
+    # The :vip_identity segment of the running, enabled, status and health routes may be '-' to address a selection
+    # of agents chosen by query parameters, as the devices routes use '-' for a topic segment:
+    #   tag=<glob>          fnmatch against the agent's tag; 'tag=*' is every agent that has a tag.
+    #   regex=<pattern>     re.search against the VIP identity.
+    #   include-hidden=true also consider platform services (running peers that are not installed agents).
+    # Parameters combine by intersection. Responses are keyed by identity; writes act on each agent independently
+    # and report a per-agent error rather than aborting the batch.
+    WILDCARD_IDENTITY = '-'
+    SELECTION_ROUTES = ('running', 'enabled', 'status', 'health')
+
+    def _agent_records(self, platform: str, include_hidden: bool = False) -> dict:
+        """Installed agents by identity (list_agents records plus 'running'); hidden peers added when asked."""
+        records = {a['identity']: dict(a) for a in self._rpc(CONTROL, 'list_agents', external_platform=platform)}
+        peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
+        for identity, record in records.items():
+            record['running'] = identity in peerlist
+        if include_hidden:
+            for peer in peerlist:
+                if peer not in records:
+                    records[peer] = {'identity': peer, 'uuid': None, 'name': None, 'tag': None, 'priority': None,
+                                     'running': True}
+        return records
+
+    @staticmethod
+    def _agent_matches(record: dict, tag_glob: str | None, regex: str | None) -> bool:
+        if tag_glob is not None:
+            tag = record.get('tag')
+            if not tag or not fnmatch.fnmatchcase(str(tag), tag_glob):
+                return False
+        if regex is not None and not re.search(regex, record['identity']):
+            return False
+        return True
+
+    def _select_agents(self, platform: str, query_params: dict) -> tuple[dict, Response | None]:
+        """Agents addressed by the wildcard identity: ({identity: record}, None) or ({}, error response)."""
+        if platform not in self._get_platforms():
+            return {}, Response(json.dumps({'error': f'Unknown platform: {platform}'}), 400,
+                                content_type='application/json')
+        include_hidden = self._to_bool(query_params.get('include-hidden', False))
+        tag_glob, regex = query_params.get('tag'), query_params.get('regex')
+        records = self._agent_records(platform, include_hidden)
+        try:
+            return {i: r for i, r in records.items() if self._agent_matches(r, tag_glob, regex)}, None
+        except re.error as e:
+            return {}, Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
+
+    def _running_for_selection(self, platform: str, query_params: dict, request_method: str, restart: bool
+                               ) -> Response | None:
+        selected, error = self._select_agents(platform, query_params)
+        if error:
+            return error
+        if request_method == 'GET':
+            return Response(json.dumps({i: {'running': r['running']} for i, r in selected.items()}), 200,
+                            content_type='application/json')
+        if request_method not in ('PUT', 'DELETE'):
+            return None
+        results = {}
+        for identity, record in selected.items():
+            err = None
+            try:
+                if record.get('uuid') is None:
+                    raise ValueError('not an installed agent')
+                if request_method == 'DELETE':
+                    if record['running']:
+                        self._rpc(CONTROL, 'stop_agent', record['uuid'], external_platform=platform)
+                elif restart:
+                    self._rpc(CONTROL, 'restart_agent', record['uuid'], external_platform=platform)
+                elif not record['running']:   # PUT without restart ensures the agent is running
+                    self._rpc(CONTROL, 'start_agent', record['uuid'], external_platform=platform)
+            except Exception as e:
+                err = str(e)
+            results[identity] = err
+        peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
+        return Response(json.dumps({i: {'running': i in peerlist, 'error': err} for i, err in results.items()}), 200,
+                        content_type='application/json')
+
+    def _enabled_for_selection(self, platform: str, query_params: dict, request_method: str, priority: str
+                               ) -> Response | None:
+        selected, error = self._select_agents(platform, query_params)
+        if error:
+            return error
+
+        def _enabled(record):
+            p = record.get('priority')
+            p = int(p) if p not in (None, '') else None
+            return {'status': p is not None, 'priority': p}
+
+        if request_method == 'GET':
+            return Response(json.dumps({i: _enabled(r) for i, r in selected.items()}), 200,
+                            content_type='application/json')
+        if request_method not in ('PUT', 'DELETE'):
+            return None
+        if request_method == 'PUT' and (not priority.isdigit() or not 0 <= int(priority) < 100):
+            error = {'error': f'Priority must be an integer from 0 - 99. Received: {priority}.'}
+            return Response(json.dumps(error), 400, content_type='application/json')
+        new_priority = priority if request_method == 'PUT' else None
+        results = {}
+        for identity, record in selected.items():
+            err = None
+            try:
+                if record.get('uuid') is None:
+                    raise ValueError('not an installed agent')
+                self._rpc(CONTROL, 'prioritize_agent', record['uuid'], new_priority, external_platform=platform)
+                record['priority'] = new_priority
+            except Exception as e:
+                err = str(e)
+            results[identity] = {**_enabled(record), 'error': err}
+        return Response(json.dumps(results), 200, content_type='application/json')
 
     @endpoint
     def handle_platforms_agents_tag(self, env: dict, data: dict) -> Response | None:
