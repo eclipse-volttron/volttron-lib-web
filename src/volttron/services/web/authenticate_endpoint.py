@@ -26,7 +26,7 @@ import logging
 import os
 import re
 from urllib.parse import parse_qs
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 
 import jwt
@@ -183,7 +183,7 @@ class AuthenticateEndpoints(object):
         return response
 
     def _get_tokens(self, claims):
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         claims['iat'] = now
         claims['nbf'] = now
         claims['exp'] = now + timedelta(minutes=self.access_token_timeout)
