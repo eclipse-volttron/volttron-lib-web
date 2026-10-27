@@ -132,14 +132,17 @@ def endpoint(func):
 def authorized_groups(agent, env) -> list:
     """Validate the bearer token in env against the web service and return the user's groups.
 
-    Raises if there is no token or the token does not validate. Never returns None, so callers can test group
-    membership directly. Tokens that validate but carry no groups (e.g. a refresh token) yield an empty list.
+    Raises if there is no token, the token does not validate, or it is not an access token of a live session (a
+    refresh token, or a revoked session). Never returns None, so callers can test group membership directly.
     """
     from volttron.services.web import get_bearer, NotAuthorized
     bearer = get_bearer(env)
     if not bearer:
         raise NotAuthorized("No bearer token supplied.")
     claims = agent.get_user_claims(bearer) or {}
+    if not claims:
+        # A refresh token, or a revoked session: the caller must log in again, not ask for more rights.
+        raise NotAuthorized("Token is not a valid access token.")
     return list(claims.get('groups') or [])
 
 

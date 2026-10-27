@@ -66,12 +66,14 @@ class TestPubsubRouteRequiresAuthorization:
         assert response.status_code == 401
         vui.pubsub_manager.publish.assert_not_called()
 
-    @pytest.mark.parametrize("claims", [{}, {'groups': []}, {'groups': ['admin']}, {'groups': None}])
-    def test_publish_without_vui_group_is_forbidden(self, vui, claims):
+    @pytest.mark.parametrize("claims, status", [({}, 401), ({'groups': []}, 403), ({'groups': ['admin']}, 403),
+                                                ({'groups': None}, 403)])
+    def test_publish_without_vui_group_is_refused(self, vui, claims, status):
+        # Empty claims (a refresh token or a revoked session) are 401: the caller must log in again.
         vui._agent.get_user_claims = lambda bearer: claims
         env = get_test_web_env(PUBSUB, method='PUT', HTTP_AUTHORIZATION='Bearer refresh-or-admin-only')
         response = vui.handle_platforms_pubsub(env, MagicMock(), {'message': 1})
-        assert response.status_code == 403
+        assert response.status_code == status
         vui.pubsub_manager.publish.assert_not_called()
 
     def test_subscribe_without_token_is_unauthorized(self, vui):
@@ -148,11 +150,13 @@ class TestEndpointDecoratorFailsClosed:
         env = get_test_web_env('/vui/platforms', HTTP_AUTHORIZATION='not-a-bearer-header')
         assert vui.handle_platforms(env, {}).status_code == 401
 
-    @pytest.mark.parametrize("claims", [{}, None, {'groups': None}, {'grant_type': 'refresh_token'}])
-    def test_tokens_without_groups_are_403_not_500(self, vui, claims):
+    @pytest.mark.parametrize("claims, status", [({}, 401), (None, 401), ({'groups': None}, 403),
+                                                ({'grant_type': 'refresh_token'}, 403)])
+    def test_tokens_without_groups_are_refused_not_500(self, vui, claims, status):
+        # Empty claims (a refresh token or a revoked session) are 401: the caller must log in again.
         vui._agent.get_user_claims = lambda bearer: claims
         env = get_test_web_env('/vui/platforms', HTTP_AUTHORIZATION='Bearer refresh')
-        assert vui.handle_platforms(env, {}).status_code == 403
+        assert vui.handle_platforms(env, {}).status_code == status
 
     def test_every_vui_route_is_wrapped(self, vui):
         for regex, route_type, handler in vui.get_routes():
