@@ -160,6 +160,17 @@ class TestVuiAuthorization:
         r = requests.get(f'{base_url}/vui', headers={'Authorization': 'Basic abc'}, timeout=10)
         assert r.status_code == 401
 
+    def test_cookie_authenticates_reads_but_not_writes(self, base_url, tokens, P):
+        cookies = {'Bearer': tokens['access_token']}
+        assert requests.get(f'{base_url}/vui/platforms', cookies=cookies, timeout=10).status_code == 200
+        r = requests.put(f'{base_url}{P}/pubsub/e2e/cookie-write', cookies=cookies,
+                         json={'headers': {}, 'message': 1}, timeout=10)
+        assert r.status_code == 401
+        r = requests.put(f'{base_url}{P}/pubsub/e2e/cookie-write', cookies=cookies,
+                         headers={'Authorization': f"Bearer {tokens['access_token']}"},
+                         json={'headers': {}, 'message': 1}, timeout=10)
+        assert r.status_code == 200
+
     def test_refresh_token_is_not_accepted_for_api(self, base_url, tokens):
         r = requests.get(f'{base_url}/vui', headers={'Authorization': f"Bearer {tokens['refresh_token']}"}, timeout=10)
         assert r.status_code == 401   # not an access token: log in, rather than lacking a group
@@ -745,6 +756,25 @@ class TestPubsub:
                 else:
                     closed = frame.opcode == websocket.ABNF.OPCODE_CLOSE
             assert closed, 'websocket of the revoked session stayed open'
+        finally:
+            ws.close()
+
+    def test_cookie_subscribe_needs_a_same_origin_page(self, base_url, api, P):
+        topic = 'e2e/cookie-origin'
+        cookie = f"Bearer={api.access_token}"
+        host = base_url.split('//', 1)[1]
+        # No Origin, or another site's Origin: refused before any socket is opened. (websocket-client sends an
+        # Origin matching the URL unless told not to.)
+        for extra in ({'suppress_origin': True}, {'origin': 'http://evil.example'}):
+            with pytest.raises((websocket.WebSocketBadStatusException, websocket.WebSocketException)):
+                websocket.create_connection(self._ws_url(api, P, topic), cookie=cookie, timeout=10, **extra)
+        # A page served by this host may open the socket with the cookie.
+        ws = websocket.create_connection(self._ws_url(api, P, topic), cookie=cookie, origin=f'http://{host}',
+                                         timeout=30)
+        try:
+            time.sleep(1)
+            assert api.put(f'{P}/pubsub/{topic}', json={'headers': {}, 'message': {'via': 'cookie'}}).status_code == 200
+            assert json.loads(ws.recv()) == {'via': 'cookie'}
         finally:
             ws.close()
 

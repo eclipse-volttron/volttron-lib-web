@@ -121,7 +121,9 @@ def endpoint(func):
             raise TypeError(f'{func.__name__}() takes {expected_args + 2} positional arguments but '
                             f'{len(args) + 2} were given')
         try:
-            groups = authorized_groups(self._agent, env)
+            # A request that changes state must carry the token in the Authorization header: a browser attaches
+            # the login cookie to requests that other sites make, which would let them act as the user.
+            groups = authorized_groups(self._agent, env, header_only=env.get('REQUEST_METHOD') != 'GET')
         except Exception as e:
             _log.warning(f"Unauthorized user attempted to connect to {env.get('PATH_INFO')}. Caught Exception: {e}")
             return Response(json.dumps({'error': 'Not Authorized'}), 401, content_type='application/json')
@@ -149,14 +151,16 @@ def endpoint(func):
     return verify_and_dispatch
 
 
-def authorized_groups(agent, env) -> list:
+def authorized_groups(agent, env, header_only=False) -> list:
     """Validate the bearer token in env against the web service and return the user's groups.
+
+    With ``header_only`` the token is taken from the Authorization header alone, never from the cookie.
 
     Raises if there is no token, the token does not validate, or it is not an access token of a live session (a
     refresh token, or a revoked session). Never returns None, so callers can test group membership directly.
     """
-    from volttron.services.web import get_bearer, NotAuthorized
-    bearer = get_bearer(env)
+    from volttron.services.web import get_authorization_bearer, get_bearer, NotAuthorized
+    bearer = get_authorization_bearer(env) if header_only else get_bearer(env)
     if not bearer:
         raise NotAuthorized("No bearer token supplied.")
     claims = agent.get_user_claims(bearer) or {}
@@ -164,6 +168,23 @@ def authorized_groups(agent, env) -> list:
         # A refresh token, or a revoked session: the caller must log in again, not ask for more rights.
         raise NotAuthorized("Token is not a valid access token.")
     return list(claims.get('groups') or [])
+
+
+def _same_origin(env) -> bool:
+    """True when the request's Origin names this server.
+
+    A browser sends the login cookie on a websocket opened by any site, so a cookie-authenticated upgrade must
+    come from a page served by this host.
+    """
+    from urllib.parse import urlparse
+    origin, host = env.get('HTTP_ORIGIN'), env.get('HTTP_HOST')
+    if not origin or not host:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    return parsed.scheme in ('http', 'https') and parsed.netloc.lower() == host.lower()
 
 
 class VUIEndpoints:
@@ -1097,7 +1118,7 @@ class VUIEndpoints:
 
     @endpoint
     def handle_platforms_pubsub(self, env: dict, start_response, data: dict):
-        from volttron.services.web import get_bearer
+        from volttron.services.web import get_authorization_bearer, get_bearer
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         # The access token has already been validated by @endpoint; it is used here only as the key that groups
@@ -1118,6 +1139,12 @@ class VUIEndpoints:
                 response = Response(json.dumps(ret_dict), 200, content_type='application/json')
                 return response
             else:
+                # The browser WebSocket API cannot set an Authorization header, so a page must open the socket with
+                # the cookie; that is only safe when the page came from this server.
+                if get_authorization_bearer(env) is None and not _same_origin(env):
+                    _log.warning(f"Refused a cookie-authenticated pubsub subscription from origin "
+                                 f"{env.get('HTTP_ORIGIN')!r} for host {env.get('HTTP_HOST')!r}")
+                    return Response(json.dumps({'error': 'Forbidden'}), 403, content_type='application/json')
                 ws = self.pubsub_manager.open_subscription_socket(access_token, topic)
                 env['ws4py.app'] = self.pubsub_manager
                 return [ws(env, start_response)]
