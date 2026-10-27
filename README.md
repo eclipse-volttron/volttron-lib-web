@@ -155,7 +155,14 @@ platforms = requests.get(url=f'{bind_web_address}/vui/platforms',
                          headers={'Authorization': f'Bearer {access_token}'}
                          )
 print(platforms.json())
+
+# Log out: every token of this login is refused from now on.
+requests.delete(url=f'{bind_web_address}/authenticate',
+                headers={'Authorization': f'Bearer {tokens.json()["refresh_token"]}'})
 ```
+
+Requests that change state (anything other than GET) must carry the token in the `Authorization` header; the `Bearer`
+cookie set by the login page authenticates page loads and other GET requests only.
 
 ## Development
 
