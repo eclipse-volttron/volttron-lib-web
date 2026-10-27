@@ -111,8 +111,34 @@ class TestAuthenticate:
     def test_renew_without_token_is_401(self, base_url):
         assert requests.put(f'{base_url}/authenticate', json={}, timeout=10).status_code == 401
 
-    def test_revoke_is_not_implemented(self, api):
-        assert api.delete('/authenticate').status_code == 501
+    def test_revoke_logs_the_whole_session_out(self, base_url):
+        fresh = requests.post(f'{base_url}/authenticate', json={'username': USERNAME, 'password': PASSWORD},
+                              timeout=10).json()
+        access = {'Authorization': f"Bearer {fresh['access_token']}"}
+        refresh = {'Authorization': f"Bearer {fresh['refresh_token']}"}
+        renewed = requests.put(f'{base_url}/authenticate', json={}, headers=refresh, timeout=10).json()
+        renewed_access = {'Authorization': f"Bearer {renewed['access_token']}"}
+        assert requests.get(f'{base_url}/vui/platforms', headers=access, timeout=10).status_code == 200
+        # Neither no token nor the cookie alone logs anyone out.
+        assert requests.delete(f'{base_url}/authenticate', timeout=10).status_code == 401
+        assert requests.delete(f'{base_url}/authenticate', cookies={'Bearer': fresh['access_token']},
+                               timeout=10).status_code == 401
+        assert requests.get(f'{base_url}/vui/platforms', headers=access, timeout=10).status_code == 200
+
+        r = requests.delete(f'{base_url}/authenticate', headers=refresh, timeout=10)
+        assert r.status_code == 204 and r.content == b''
+        assert requests.get(f'{base_url}/vui/platforms', headers=access, timeout=10).status_code == 401
+        assert requests.get(f'{base_url}/vui/platforms', headers=renewed_access, timeout=10).status_code == 401
+        assert requests.get(f'{base_url}/admin/index.html', headers=access, timeout=10).status_code == 401
+        assert requests.put(f'{base_url}/authenticate', json={}, headers=refresh, timeout=10).status_code == 401
+        # Idempotent, and other sessions are untouched.
+        assert requests.delete(f'{base_url}/authenticate', headers=refresh, timeout=10).status_code == 204
+        assert requests.delete(f'{base_url}/authenticate', headers=access, timeout=10).status_code == 204
+
+    def test_revoke_with_bad_token_is_401(self, base_url, api):
+        assert requests.delete(f'{base_url}/authenticate', headers={'Authorization': 'Bearer nope'},
+                               timeout=10).status_code == 401
+        assert api.get('/vui/platforms').status_code == 200
 
     def test_get_is_405(self, api):
         assert api.get('/authenticate').status_code == 405
@@ -136,7 +162,7 @@ class TestVuiAuthorization:
 
     def test_refresh_token_is_not_accepted_for_api(self, base_url, tokens):
         r = requests.get(f'{base_url}/vui', headers={'Authorization': f"Bearer {tokens['refresh_token']}"}, timeout=10)
-        assert r.status_code == 403
+        assert r.status_code == 401   # not an access token: log in, rather than lacking a group
 
     def test_user_without_vui_group_is_403(self, platform, base_url):
         platform.add_web_user('plain', 'plain-user-password', groups=['admin'])
@@ -695,6 +721,30 @@ class TestPubsub:
             routes = wait_until(lambda: api.get(f'{P}/pubsub').json() or None, timeout=10,
                                 message='open socket not listed')
             assert topic in routes
+        finally:
+            ws.close()
+
+    def test_revoking_the_session_closes_its_websocket(self, base_url, api, P):
+        fresh = requests.post(f'{base_url}/authenticate', json={'username': USERNAME, 'password': PASSWORD},
+                              timeout=10).json()
+        topic = f'devices/{DEVICE_TOPIC}/multi'   # published every scrape, so recv() returns promptly
+        ws = websocket.create_connection(self._ws_url(api, P, topic),
+                                         header=[f"Authorization: Bearer {fresh['access_token']}"], timeout=30)
+        try:
+            ws.recv()   # subscribed and receiving
+            r = requests.delete(f'{base_url}/authenticate',
+                                headers={'Authorization': f"Bearer {fresh['refresh_token']}"}, timeout=10)
+            assert r.status_code == 204
+            deadline = time.time() + 30
+            closed = False
+            while time.time() < deadline and not closed:
+                try:
+                    frame = ws.recv_frame()
+                except websocket.WebSocketConnectionClosedException:
+                    closed = True
+                else:
+                    closed = frame.opcode == websocket.ABNF.OPCODE_CLOSE
+            assert closed, 'websocket of the revoked session stayed open'
         finally:
             ws.close()
 

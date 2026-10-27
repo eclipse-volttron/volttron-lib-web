@@ -47,6 +47,7 @@ from .admin_endpoints import AdminEndpoints
 from .vui_endpoints import VUIEndpoints
 from .rpc_proxy_policy import RpcProxyPolicy
 from .authenticate_endpoint import AuthenticateEndpoints
+from .token_revocation import RevokedSessions, REVOKED_SESSIONS_FILE
 from .webapp import WebApplicationWrapper
 
 
@@ -272,6 +273,11 @@ class PlatformWebService(Agent):
         self._server_greenlet: Greenlet | None = None
         self._admin_endpoints: AdminEndpoints | None = None
         self._vui_endpoints: VUIEndpoints | None = None
+        self._authenticate_endpoints: AuthenticateEndpoints | None = None
+        # Login sessions revoked through DELETE /authenticate. Shared with the authenticate endpoint and
+        # consulted on every token check, so a revoked token is refused everywhere at once.
+        self._revoked_sessions = RevokedSessions(os.path.join(str(self.config.volttron_home),
+                                                              REVOKED_SESSIONS_FILE))
 
     @property
     def ssl_cert(self) -> str | None:
@@ -313,7 +319,18 @@ class PlatformWebService(Agent):
         else:
             raise ValueError("Configuration error secret key or web ssl cert must be not None.")
 
-        return claims if claims.get('grant_type') == 'access_token' else {}
+        if claims.get('grant_type') != 'access_token' or not self._revoked_sessions.allows(claims):
+            return {}
+        return claims
+
+    def _session_revoked(self, sid):
+        """Close the websockets that were opened with tokens of a revoked login session."""
+        manager = getattr(self._vui_endpoints, 'pubsub_manager', None)
+        if manager is None:
+            return
+        closed = manager.close_session_sockets(sid)
+        if closed:
+            _log.info('Closed %d websocket(s) of a revoked web session.', closed)
 
     def _websocket_owner_check(self, endpoint):
         """Raise unless the calling peer registered the websocket endpoint."""
@@ -814,12 +831,15 @@ class PlatformWebService(Agent):
             # Use the resolved cert path: when the platform generated its own server certificate the configured
             # value is None and only the local variable holds the file that was created above.
             ssl_public_key = CertWrapper.get_cert_public_key(ssl_cert)
-            for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
-                self.registered_routes.append(rt)
+            self._authenticate_endpoints = AuthenticateEndpoints(
+                tls_private_key=ssl_private_key, tls_public_key=ssl_public_key,
+                revoked_sessions=self._revoked_sessions, on_revoke=self._session_revoked)
         else:
             # We don't have a private ssl key if we aren't using ssl.
-            for rt in AuthenticateEndpoints(web_secret_key=self.config.secret_key.get_secret_value()).get_routes():
-                self.registered_routes.append(rt)
+            self._authenticate_endpoints = AuthenticateEndpoints(
+                web_secret_key=self.config.secret_key.get_secret_value(),
+                revoked_sessions=self._revoked_sessions, on_revoke=self._session_revoked)
+        self.registered_routes.extend(self._authenticate_endpoints.get_routes())
 
         static_dir = os.path.join(os.path.dirname(__file__), "static")
         self.registered_routes.append((re.compile('^/.*$'), 'path', static_dir))

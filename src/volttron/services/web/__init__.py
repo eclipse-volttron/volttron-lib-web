@@ -65,6 +65,18 @@ def get_bearer(env):
         else:
             return None
 
+
+def get_authorization_bearer(env):
+    """Return the token from an ``Authorization: Bearer`` header, or None.
+
+    Unlike get_bearer this never reads the cookie, which a browser attaches to requests that another site makes.
+    """
+    parts = (env.get('HTTP_AUTHORIZATION') or '').split(' ')
+    if len(parts) != 2 or parts[0].upper() != 'BEARER' or not parts[1]:
+        return None
+    return parts[1]
+
+
 def get_user_claim_from_bearer(bearer, web_secret_key=None, tls_public_key=None):
     if web_secret_key is None and tls_public_key is None:
         raise ValueError("web_secret_key or tls_public_key must be set")
