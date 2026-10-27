@@ -163,3 +163,54 @@ class TestEndpointDecoratorFailsClosed:
             assert route_type == 'callable'
             assert handler.__name__ == getattr(handler, '__wrapped__', handler).__name__
             assert getattr(handler, '__wrapped__', None) is not None, f'{handler.__name__} is not @endpoint-wrapped'
+
+
+class TestCookieOnlyRequests:
+    """The login cookie authenticates reads only. A browser sends it on requests other sites make, so a request
+    that changes state, or opens a websocket, needs the Authorization header or a same-origin page."""
+
+    def test_cookie_get_is_accepted(self, vui):
+        env = get_test_web_env('/vui/platforms', HTTP_COOKIE='Bearer=good')
+        assert vui.handle_platforms(env, {}).status_code == 200
+
+    @pytest.mark.parametrize("method", ['PUT', 'POST', 'DELETE'])
+    def test_cookie_write_is_unauthorized(self, vui, method):
+        env = get_test_web_env(PUBSUB, method=method, HTTP_COOKIE='Bearer=good')
+        response = vui.handle_platforms_pubsub(env, MagicMock(), {'message': 1})
+        assert response.status_code == 401
+        vui.pubsub_manager.publish.assert_not_called()
+
+    def test_header_write_is_still_accepted(self, vui):
+        env = get_test_web_env(PUBSUB, method='PUT', HTTP_AUTHORIZATION='Bearer good', HTTP_COOKIE='Bearer=other')
+        assert vui.handle_platforms_pubsub(env, MagicMock(), {'message': 1}).status_code == 200
+
+    def _subscribe(self, vui, **env_extra):
+        vui.pubsub_manager.open_subscription_socket.return_value = lambda env, start_response: b''
+        env = get_test_web_env(PUBSUB, **env_extra)
+        return vui.handle_platforms_pubsub(env, MagicMock(), {})
+
+    @pytest.mark.parametrize("origin", [None, 'http://other.example', 'http://v2:9999', 'http://v2', 'null',
+                                        'v2:8080', 'ftp://v2:8080'])
+    def test_cookie_subscribe_from_another_origin_is_forbidden(self, vui, origin):
+        extra = {'HTTP_COOKIE': 'Bearer=good'}
+        if origin is not None:
+            extra['HTTP_ORIGIN'] = origin
+        response = self._subscribe(vui, **extra)
+        assert response.status_code == 403
+        vui.pubsub_manager.open_subscription_socket.assert_not_called()
+
+    @pytest.mark.parametrize("origin", ['http://v2:8080', 'http://V2:8080'])
+    def test_cookie_subscribe_from_the_same_origin_opens_a_socket(self, vui, origin):
+        response = self._subscribe(vui, HTTP_COOKIE='Bearer=good', HTTP_ORIGIN=origin)
+        assert isinstance(response, list)
+        vui.pubsub_manager.open_subscription_socket.assert_called_once()
+
+    def test_header_subscribe_needs_no_origin(self, vui):
+        response = self._subscribe(vui, HTTP_AUTHORIZATION='Bearer good', HTTP_ORIGIN='http://other.example')
+        assert isinstance(response, list)
+        vui.pubsub_manager.open_subscription_socket.assert_called_once()
+
+    def test_cookie_socket_route_listing_is_a_read(self, vui):
+        vui.pubsub_manager.get_socket_routes.return_value = {}
+        env = get_test_web_env('/vui/platforms/my_instance_name/pubsub', HTTP_COOKIE='Bearer=good')
+        assert vui.handle_platforms_pubsub(env, MagicMock(), {}).status_code == 200
