@@ -17,7 +17,7 @@ packages = [ {include="volttron", from = "src" } ]
 
 [tool.poetry.dependencies]
 python = "^3.10"
-volttron-lib-tree = ">=2.0.0rc4"
+volttron-lib-tree = ">=2.0.0rc5"
 argon2-cffi = "^21.3.0"
 jinja2 = ">=2.10.1"
 passlib = "^1.7.4"
