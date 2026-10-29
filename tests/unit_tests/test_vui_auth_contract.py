@@ -173,6 +173,15 @@ class TestCookieOnlyRequests:
         env = get_test_web_env('/vui/platforms', HTTP_COOKIE='Bearer=good')
         assert vui.handle_platforms(env, {}).status_code == 200
 
+    def test_cookie_head_is_accepted_like_get(self, vui):
+        # HEAD is a safe method: a cookie-authenticated HEAD carries the same risk as a cookie-authenticated GET, none.
+        env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs', method='HEAD', HTTP_COOKIE='Bearer=good')
+        assert vui.handle_platforms_agents_configs(env, {}).status_code == 200
+
+    def test_head_without_a_token_is_unauthorized(self, vui):
+        env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs', method='HEAD')
+        assert vui.handle_platforms_agents_configs(env, {}).status_code == 401
+
     @pytest.mark.parametrize("method", ['PUT', 'POST', 'DELETE'])
     def test_cookie_write_is_unauthorized(self, vui, method):
         env = get_test_web_env(PUBSUB, method=method, HTTP_COOKIE='Bearer=good')

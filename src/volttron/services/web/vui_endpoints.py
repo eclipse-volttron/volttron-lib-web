@@ -24,10 +24,13 @@
 
 import functools
 import fnmatch
+import hashlib
 import inspect
 import os
 import re
 import json
+from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from os.path import normpath, join
 from gevent.timeout import Timeout
 from collections import defaultdict
@@ -123,7 +126,7 @@ def endpoint(func):
         try:
             # A request that changes state must carry the token in the Authorization header: a browser attaches
             # the login cookie to requests that other sites make, which would let them act as the user.
-            groups = authorized_groups(self._agent, env, header_only=env.get('REQUEST_METHOD') != 'GET')
+            groups = authorized_groups(self._agent, env, header_only=env.get('REQUEST_METHOD') not in ('GET', 'HEAD'))
         except Exception as e:
             _log.warning(f"Unauthorized user attempted to connect to {env.get('PATH_INFO')}. Caught Exception: {e}")
             return Response(json.dumps({'error': 'Not Authorized'}), 401, content_type='application/json')
@@ -185,6 +188,84 @@ def _same_origin(env) -> bool:
     except ValueError:
         return False
     return parsed.scheme in ('http', 'https') and parsed.netloc.lower() == host.lower()
+
+
+
+# ---- config entry metadata (see docs/source/platforms/agents/config-endpoints.rst) -----------------------------------
+def _etag(config_type, data) -> str:
+    """A strong validator over the stored type and text, so a re-store under another type changes it and entries that
+    predate the store's ``modified`` field still have one."""
+    digest = hashlib.sha256(f'{config_type}\n{data if data is not None else ""}'.encode('utf-8')).hexdigest()
+    return f'"{digest[:32]}"'
+
+
+def _http_date(modified) -> str | None:
+    """The store's ISO 8601 ``modified`` as an HTTP date; None when the entry predates the field."""
+    if not modified:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(modified))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return format_datetime(stamp.astimezone(timezone.utc), usegmt=True)
+
+
+def _metadata_headers(metadata: dict) -> dict:
+    headers = {'ETag': metadata['etag'], 'Config-Type': metadata.get('type') or 'raw'}
+    last_modified = _http_date(metadata.get('modified'))
+    if last_modified:
+        headers['Last-Modified'] = last_modified
+    return headers
+
+
+def _metadata_body(metadata: dict) -> dict:
+    data = metadata.get('data')
+    return {'type': metadata.get('type'), 'modified': metadata.get('modified'), 'etag': metadata['etag'],
+            'size': len(data.encode('utf-8')) if isinstance(data, str) else (len(data) if data is not None else 0)}
+
+
+def _etag_matches(header_value: str, etag: str) -> bool:
+    """RFC 7232 comparison for If-Match / If-None-Match: a list of validators or ``*``; weak prefixes ignored."""
+    for candidate in (c.strip() for c in header_value.split(',')):
+        if candidate == '*':
+            return True
+        if candidate.startswith('W/'):
+            candidate = candidate[2:]
+        if candidate == etag:
+            return True
+    return False
+
+
+def _not_modified(env: dict, metadata: dict) -> bool:
+    """Whether a conditional GET or HEAD may answer 304. If-None-Match wins; If-Modified-Since needs a recorded
+    modification time, so an entry without one is always sent."""
+    if_none_match = env.get('HTTP_IF_NONE_MATCH')
+    if if_none_match is not None:
+        return _etag_matches(if_none_match, metadata['etag'])
+    if_modified_since = env.get('HTTP_IF_MODIFIED_SINCE')
+    if if_modified_since is None or not metadata.get('modified'):
+        return False
+    try:
+        since = parsedate_to_datetime(if_modified_since)
+        modified = datetime.fromisoformat(str(metadata['modified']))
+    except (TypeError, ValueError):
+        return False
+    if modified.tzinfo is None:
+        modified = modified.replace(tzinfo=timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    return modified.replace(microsecond=0) <= since
+
+
+def _write_flags(query_params: dict) -> dict:
+    """``trigger-callback`` and ``send-update`` query parameters of PUT and POST (default true)."""
+    flags = {}
+    for param, name in (('trigger-callback', 'trigger_callback'), ('send-update', 'send_update')):
+        if param in query_params:
+            flags[name] = str(query_params[param]).lower() in ('true', 't', '1', 'yes')
+    return flags
 
 
 class VUIEndpoints:
@@ -483,37 +564,61 @@ class VUIEndpoints:
     @endpoint
     def handle_platforms_agents_configs(self, env: dict, data: dict) -> Response | None:
         """
-                Endpoints for /vui/platforms/:platform/agents/:vip_identity/configs/:file_name
-                :param env:
-                :param data:
-                :return:
-                """
+        Endpoints for /vui/platforms/:platform/agents/:vip_identity/configs/:file_name
+
+        GET (and HEAD) of one entry carry ETag, Last-Modified (when the store recorded a modification time) and
+        Config-Type headers, answer If-None-Match / If-Modified-Since with 304, and return the entry's metadata
+        instead of its contents when ``metadata=true`` is given. GET of the listing adds a ``configs`` map of
+        metadata per entry with ``metadata=true``. PUT and POST take ``trigger-callback`` and ``send-update``
+        (default true, forwarded to the store); PUT honours If-Match with 412 on a mismatch.
+        :param env:
+        :param data:
+        :return:
+        """
         _log.debug('VUI: In handle_platforms_agents_configs_config')
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         config_type = env.get('CONTENT_TYPE')
-
+        query_params = _parse_query_params(env.get('QUERY_STRING', ''))
+        with_metadata = self._to_bool(query_params.get('metadata', False))
         no_config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/?$', path_info)
         if no_config_name:
             platform, vip_identity, config_name = tuple(no_config_name.groups()) + ('',)
-            query_params = _parse_query_params(env['QUERY_STRING'])
             config_name = query_params.get('config-name')
         else:
             platform, vip_identity, config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/(.*)/?$',
                                                            path_info).groups()
             config_name = config_name[:-1] if config_name[-1] == '/' else config_name
-        if request_method == 'GET':
+        if request_method in ('GET', 'HEAD'):
+            # werkzeug returns an empty body for HEAD and keeps the status and headers, so HEAD is GET here.
             try:
                 if no_config_name:
                     if vip_identity != '-':
                         setting_list = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
                                                  external_platform=platform)
                         route_dict = self._links(path_info, setting_list)
+                        if with_metadata:
+                            route_dict['configs'] = {
+                                name: {**_metadata_body(self._config_metadata(platform, vip_identity, name)),
+                                       'link': route_dict['links'][name]}
+                                for name in setting_list}
                         return Response(json.dumps(route_dict), 200, content_type='application/json')
                     else:
                         list_of_agents = self._rpc(CONFIGURATION_STORE, 'list_stores', external_platform=platform)
+                        if with_metadata:
+                            counts = {identity: {'configs': len(self._rpc(CONFIGURATION_STORE, 'list_configs', identity,
+                                                                           external_platform=platform))}
+                                      for identity in list_of_agents}
+                            return Response(json.dumps(counts), 200, content_type='application/json')
                         return Response(json.dumps(list_of_agents), 200, content_type='application/json')
                 elif not no_config_name:
+                    metadata = self._config_metadata(platform, vip_identity, config_name)
+                    headers = _metadata_headers(metadata)
+                    if _not_modified(env, metadata):
+                        return Response(None, 304, headers=headers)
+                    if with_metadata:
+                        return Response(json.dumps(_metadata_body(metadata)), 200, headers=headers,
+                                        content_type='application/json')
                     # Content negotiation (see docs): JSON (parsed contents) unless the Accept header restricts the
                     # response to text/csv (CSV configs only) or text/plain (the stored file text).
                     response_type = self._negotiate_config_response_type(env.get('HTTP_ACCEPT'))
@@ -524,29 +629,38 @@ class VUIEndpoints:
                     if response_type == 'application/json':
                         parsed = self._rpc(CONFIGURATION_STORE, 'get_config', vip_identity, config_name, raw=False,
                                            external_platform=platform)
-                        return Response(json.dumps(parsed), 200, content_type='application/json')
-                    metadata = self._rpc(CONFIGURATION_STORE, 'get_metadata', vip_identity, config_name,
-                                         external_platform=platform)
+                        return Response(json.dumps(parsed), 200, headers=headers, content_type='application/json')
                     stored_type = metadata.get('type')
                     if response_type == 'text/csv' and stored_type != 'csv':
                         return Response(json.dumps({"Error": f'Configuration "{config_name}" is stored as '
                                                              f'{stored_type}, not csv.'}),
                                         406, content_type='application/json')
-                    return Response(metadata['data'], 200, content_type=response_type)
+                    return Response(metadata['data'], 200, headers=headers, content_type=response_type)
             except RemoteError as e:
                 if _is_authorization_error(e):
                     return _forbidden_by_platform_response(e)
                 return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
-
         elif request_method == 'PUT' and (not no_config_name):
             if config_type in ['application/json', 'text/csv', 'text/plain']:
-                self._insert_config(config_type, data, vip_identity, config_name, platform)
+                if_match = env.get('HTTP_IF_MATCH')
+                if if_match is not None:
+                    try:
+                        current = self._config_metadata(platform, vip_identity, config_name)
+                    except RemoteError as e:
+                        if _is_authorization_error(e):
+                            return _forbidden_by_platform_response(e)
+                        current = None
+                    if current is None or not _etag_matches(if_match, current['etag']):
+                        return Response(json.dumps({'error': 'If-Match does not match the stored configuration.',
+                                                    'etag': current['etag'] if current else None}),
+                                        412, content_type='application/json')
+                self._insert_config(config_type, data, vip_identity, config_name, platform,
+                                    **_write_flags(query_params))
                 return Response(None, 204, content_type='application/json')
             else:
                 return Response(
                     json.dumps({"Error": "The configuration type can only be 'JSON', 'CSV' and 'RAW.'"}), 400,
                     content_type='application/json')
-
         elif request_method == 'POST' and no_config_name:
             if config_type in ['application/json', 'text/csv', 'text/plain']:
                 setting_list = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
@@ -554,7 +668,8 @@ class VUIEndpoints:
                 if config_name in setting_list:
                     e = {'Error': f'Configuration: "{config_name}" already exists for agent: "{vip_identity}"'}
                     return Response(json.dumps(e), 409, content_type='application/json')
-                self._insert_config(config_type, data, vip_identity, config_name, platform)
+                self._insert_config(config_type, data, vip_identity, config_name, platform,
+                                    **_write_flags(query_params))
                 response = Response(None, 201, content_type='application/json')
                 response.location = f'/platforms/{platform}/agents/{vip_identity}/configs/{config_name}'
                 return response
@@ -562,7 +677,6 @@ class VUIEndpoints:
                 return Response(
                     json.dumps({"Error": "The configuration type can only be 'JSON', 'CSV' and 'RAW.'"}), 400,
                     content_type='application/json')
-
         elif request_method == 'DELETE':
             if no_config_name:
                 try:
@@ -591,6 +705,13 @@ class VUIEndpoints:
                     if _is_authorization_error(e):
                         return _forbidden_by_platform_response(e)
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
+
+    def _config_metadata(self, platform: str, vip_identity: str, config_name: str) -> dict:
+        """The store's metadata of one entry (type, modified, data) with the validator derived from it."""
+        metadata = dict(self._rpc(CONFIGURATION_STORE, 'get_metadata', vip_identity, config_name,
+                                  external_platform=platform))
+        metadata['etag'] = _etag(metadata.get('type'), metadata.get('data'))
+        return metadata
 
     @endpoint
     def handle_platforms_agents_enabled(self, env: dict, data: dict) -> Response | None:
@@ -1471,13 +1592,17 @@ class VUIEndpoints:
             ret_dict[agent_identity] = la
         return ret_dict
 
-    def _insert_config(self, config_type, data, vip_identity, config_name, platform):
+    def _insert_config(self, config_type, data, vip_identity, config_name, platform, trigger_callback: bool = True,
+                       send_update: bool = True):
         config_type = re.search(r'([^\/]+$)', config_type).group() if config_type in ['application/json',
                                                                                       'text/csv'] else 'raw'
         if config_type == 'json':
             data = json.dumps(data)
+        # The store's defaults are both True; they are passed only when a client turns one off, so the RPC call keeps
+        # its shape for every existing client.
+        flags = {k: v for k, v in (('trigger_callback', trigger_callback), ('send_update', send_update)) if v is False}
         self._rpc(CONFIGURATION_STORE, 'set_config', vip_identity, config_name, data, config_type,
-                  external_platform=platform)
+                  external_platform=platform, **flags)
         return None
 
     def _rpc(self, vip_identity, method, *args, external_platform=None, **kwargs):

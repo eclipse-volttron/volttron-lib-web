@@ -417,7 +417,7 @@ def test_handle_platforms_agents_agent_response(mock_platform_web_service, vip_i
     check_links_return(response, keys=expected, leading_path=path)
 
 
-@pytest.mark.parametrize("method, status", gen_response_codes(['GET'], ['POST', 'DELETE']))
+@pytest.mark.parametrize("method, status", gen_response_codes(['GET', 'HEAD'], ['POST', 'DELETE']))
 def test_handle_platforms_agents_configs_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs', method=method,
                            HTTP_AUTHORIZATION='Bearer foo')
@@ -427,7 +427,7 @@ def test_handle_platforms_agents_configs_status_code(mock_platform_web_service, 
     check_response_codes(response, status)
 
 
-@pytest.mark.parametrize("method, status", gen_response_codes(['GET'], ['PUT', 'DELETE']))
+@pytest.mark.parametrize("method, status", gen_response_codes(['GET', 'HEAD'], ['PUT', 'DELETE']))
 def test_handle_platforms_agents_configs_config_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs/config1', method=method,
                            HTTP_AUTHORIZATION='Bearer foo')
@@ -497,8 +497,9 @@ def test_handle_platforms_agents_configs_config_get_accept(mock_platform_web_ser
     if status == 406:
         assert 'Error' in json.loads(response.get_data(as_text=True))
     if content_type == 'application/json' and status == 200:
-        vui_endpoints._rpc.assert_called_once_with(CONFIGURATION_STORE, 'get_config', 'run1', config_name, raw=False,
-                                                   external_platform='my_instance_name')
+        # The metadata for the headers is fetched first; the body still comes from the store's parsed read.
+        vui_endpoints._rpc.assert_any_call(CONFIGURATION_STORE, 'get_config', 'run1', config_name, raw=False,
+                                           external_platform='my_instance_name')
 
 
 @pytest.mark.parametrize('vip_identity, config_name, data_given, data_passed, config_type, status', [

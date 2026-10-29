@@ -461,6 +461,33 @@ class TestAgentConfigs:
         assert agent not in api.get(f'{P}/agents/-/configs').json()
         assert api.delete(base).status_code == 204               # deleting an empty or absent store needs no consent
 
+    def test_config_entry_metadata_headers_and_conditional_requests(self, api, P, config_write_capability):
+        base = f'{P}/agents/e2e.config.agent/configs'
+        assert api.put(f'{base}/meta', json={'a': 1}).status_code == 204
+        r = api.get(f'{base}/meta')
+        assert r.status_code == 200 and r.headers['Config-Type'] == 'json'
+        etag = r.headers['ETag']
+        assert etag.startswith('"') and etag.endswith('"') and 'Last-Modified' in r.headers
+        assert api.get(f'{base}/meta', headers={'If-None-Match': etag}).status_code == 304
+        assert api.get(f'{base}/meta', headers={'If-None-Match': '"stale"'}).status_code == 200
+        assert api.get(f'{base}/meta', headers={'If-Modified-Since': r.headers['Last-Modified']}).status_code == 304
+        head = api.head(f'{base}/meta')
+        assert head.status_code == 200 and head.headers['ETag'] == etag and head.content == b''
+        assert api.head(f'{base}/meta', headers={'If-None-Match': etag}).status_code == 304
+        meta = api.get(f'{base}/meta', params={'metadata': 'true'}).json()
+        assert meta['type'] == 'json' and meta['etag'] == etag and meta['size'] == len('{"a": 1}') and meta['modified']
+        listing = api.get(base, params={'metadata': 'true'}).json()
+        assert listing['configs']['meta']['etag'] == etag and 'meta' in listing['links']
+        assert api.get(f'{P}/agents/-/configs', params={'metadata': 'true'}).json()['e2e.config.agent']['configs'] >= 1
+        # a write with a stale If-Match is refused and nothing changes; a matching one goes through and moves the ETag
+        assert api.put(f'{base}/meta', json={'a': 2}, headers={'If-Match': '"stale"'}).status_code == 412
+        assert api.get(f'{base}/meta').json() == {'a': 1}
+        assert api.put(f'{base}/meta', json={'a': 2}, headers={'If-Match': etag}).status_code == 204
+        assert api.get(f'{base}/meta').headers['ETag'] != etag
+        assert api.put(f'{base}/quiet', json={'b': 1}, params={'send-update': 'false'}).status_code == 204
+        assert api.get(f'{base}/quiet').json() == {'b': 1}
+        assert api.delete(base, params={'all': 'true'}).status_code == 204
+
     def test_config_rejects_unknown_content_type(self, api, P):
         r = api.put(f'{P}/agents/e2e.config.agent/configs/x', data='<x/>', headers={'Content-Type': 'application/xml'})
         assert r.status_code == 400
