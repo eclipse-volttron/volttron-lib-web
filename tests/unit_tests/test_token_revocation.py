@@ -18,8 +18,8 @@ from ws4py.websocket import WebSocket
 
 from volttron.services.web.authenticate_endpoint import AuthenticateEndpoints
 from volttron.services.web.platform_web_service import PlatformWebService
-from volttron.services.web.token_revocation import (RevokedSessions, REVOKED_SESSIONS_FILE, SESSION_CLAIM,
-                                                    session_id)
+from volttron.services.web.token_revocation import (ISSUED_BEFORE_KEY, RevokedSessions, REVOKED_SESSIONS_FILE,
+                                                    SESSION_CLAIM, session_id)
 from volttron.services.web.user_manager import add_web_user
 from volttron.services.web.vui_pubsub import VUIPubsubManager, VUIWebSocket
 from volttrontesting.platformwrapper import create_volttron_home, with_os_environ
@@ -210,16 +210,63 @@ def test_expired_entries_are_dropped_on_load_check_and_revoke(tmp_path):
     assert set(json.load(open(path))) == {"later", "other"}
 
 
-@pytest.mark.parametrize("content", ["not json", "[1, 2]", '{"x": "notanumber", "y": true, "": 9e12, "ok": 9e12}'])
-def test_damaged_or_odd_revocation_file_is_tolerated(tmp_path, content):
+@pytest.mark.parametrize("content", ["not json", "[1, 2]", ""])
+def test_damaged_revocation_file_is_quarantined_and_older_tokens_are_refused(tmp_path, content, caplog):
     path = tmp_path / "revoked.json"
     path.write_text(content)
+    before = int(time.time())
     revoked = RevokedSessions(str(path))
-    assert revoked.is_revoked("ok") == ("ok" in content)
-    assert not revoked.is_revoked("x") and not revoked.is_revoked("y") and not revoked.is_revoked("")
+    kept = [p for p in tmp_path.iterdir() if p.name.startswith("revoked.json.corrupt-")]
+    assert len(kept) == 1 and kept[0].read_text() == content
+    assert before <= revoked.issued_before <= time.time()
+    old = {SESSION_CLAIM: "old", "iat": before - 10}
+    fresh = {SESSION_CLAIM: "fresh", "iat": int(time.time()) + 1}
+    assert not revoked.allows(old) and revoked.allows(fresh)
+    assert not revoked.allows({SESSION_CLAIM: "noiat"}) and not revoked.allows({SESSION_CLAIM: "x", "iat": True})
+    assert "could not be read" in caplog.text and kept[0].name in caplog.text
+    # The cutoff is persisted, so a restart keeps refusing the older tokens, and the new file is a normal deny-list.
+    reloaded = RevokedSessions(str(path))
+    assert reloaded.issued_before == revoked.issued_before
+    assert not reloaded.allows(old) and reloaded.allows(fresh)
+    reloaded.revoke("later", time.time() + 3600)
+    assert set(json.load(open(path))) == {"later", ISSUED_BEFORE_KEY}
+    assert not RevokedSessions(str(path)).allows({SESSION_CLAIM: "later", "iat": int(time.time()) + 1})
 
 
-@pytest.mark.parametrize("claims", [None, [], {}, {SESSION_CLAIM: ""}, {SESSION_CLAIM: 5}, {SESSION_CLAIM: "x" * 65}])
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read anything")
+def test_unreadable_revocation_file_is_treated_as_damaged(tmp_path):
+    path = tmp_path / "revoked.json"
+    path.write_text("{}")
+    path.chmod(0)
+    try:
+        revoked = RevokedSessions(str(path))
+    finally:
+        for p in tmp_path.iterdir():
+            p.chmod(0o600)
+    assert revoked.issued_before is not None
+    assert not revoked.allows({SESSION_CLAIM: "old", "iat": int(time.time()) - 10})
+
+
+def test_cutoff_is_forgotten_after_the_retention_period(tmp_path):
+    path = tmp_path / "revoked.json"
+    path.write_text(json.dumps({ISSUED_BEFORE_KEY: time.time() - 8 * 24 * 3600, "kept": time.time() + 3600}))
+    revoked = RevokedSessions(str(path))
+    assert revoked.issued_before is None and revoked.is_revoked("kept")
+    path.write_text(json.dumps({ISSUED_BEFORE_KEY: time.time() - 60}))
+    assert RevokedSessions(str(path)).issued_before is not None
+
+
+def test_odd_but_parseable_entries_are_skipped_without_quarantine(tmp_path):
+    path = tmp_path / "revoked.json"
+    path.write_text(json.dumps({"x": "notanumber", "y": True, "": 9e12, "_reserved": 9e12, "ok": 9e12}))
+    revoked = RevokedSessions(str(path))
+    assert revoked.issued_before is None and path.exists()
+    assert revoked.is_revoked("ok")
+    assert not any(revoked.is_revoked(sid) for sid in ("x", "y", "", "_reserved"))
+
+
+@pytest.mark.parametrize("claims", [None, [], {}, {SESSION_CLAIM: ""}, {SESSION_CLAIM: 5}, {SESSION_CLAIM: "x" * 65},
+                                    {SESSION_CLAIM: "_issued_before"}, {SESSION_CLAIM: "_x"}])
 def test_unusable_session_ids_are_not_allowed(tmp_path, claims):
     revoked = RevokedSessions(str(tmp_path / "revoked.json"))
     assert session_id(claims) is None
