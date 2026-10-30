@@ -679,3 +679,83 @@ class TestPubsub:
         with pytest.raises((websocket.WebSocketBadStatusException, websocket.WebSocketException)):
             websocket.create_connection(self._ws_url(api, P, 'e2e/anon'),
                                         header=[f"Authorization: Bearer {tokens['refresh_token']}"], timeout=10)
+
+    # ---- socket lifetime: in-band renewal of the access token
+
+    @staticmethod
+    def _login(base_url):
+        r = requests.post(f'{base_url}/authenticate', json={'username': USERNAME, 'password': PASSWORD}, timeout=10)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    @staticmethod
+    def _wait_closed(ws, timeout=30):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                frame = ws.recv_frame()
+            except websocket.WebSocketConnectionClosedException:
+                return True
+            if frame.opcode == websocket.ABNF.OPCODE_CLOSE:
+                return True
+        return False
+
+    def test_renewal_with_a_new_login_moves_the_socket_to_that_session(self, base_url, api, P):
+        first, second = self._login(base_url), self._login(base_url)
+        topic = 'e2e/renewal'    # nothing else publishes here, so the next frame is the server's reply
+        ws = websocket.create_connection(self._ws_url(api, P, topic),
+                                         header=[f"Authorization: Bearer {first['access_token']}"], timeout=30)
+        try:
+            time.sleep(1)
+            ws.send(json.dumps({'access_token': second['access_token']}))
+            reply = json.loads(ws.recv())
+            assert reply['renewed'] is True and isinstance(reply['expires'], int)
+            # The socket now belongs to the second session: revoking the first leaves it open and receiving.
+            r = requests.delete(f'{base_url}/authenticate',
+                                headers={'Authorization': f"Bearer {first['refresh_token']}"}, timeout=10)
+            assert r.status_code == 204
+            time.sleep(1)
+            assert api.put(f'{P}/pubsub/{topic}', json={'headers': {}, 'message': {'after': 1}}).status_code == 200
+            assert json.loads(ws.recv()) == {'after': 1}
+            # Revoking the second session closes it.
+            r = requests.delete(f'{base_url}/authenticate',
+                                headers={'Authorization': f"Bearer {second['refresh_token']}"}, timeout=10)
+            assert r.status_code == 204
+            assert self._wait_closed(ws), 'websocket of the renewed session stayed open after revocation'
+        finally:
+            ws.close()
+
+    def test_renewal_with_a_bad_token_is_refused_and_the_socket_stays_open(self, api, P):
+        topic = 'e2e/renewal-refused'
+        ws = websocket.create_connection(self._ws_url(api, P, topic),
+                                         header=[f'Authorization: Bearer {api.access_token}'], timeout=30)
+        try:
+            time.sleep(1)
+            ws.send(json.dumps({'access_token': 'nope'}))
+            assert json.loads(ws.recv()) == {'error': 'Not Authorized'}
+            ws.send('hello')
+            assert 'access_token' in json.loads(ws.recv())['error']
+            assert api.put(f'{P}/pubsub/{topic}', json={'headers': {}, 'message': 7}).status_code == 200
+            assert json.loads(ws.recv()) == 7
+        finally:
+            ws.close()
+
+    @staticmethod
+    def _subscriber_count(api, P, topic):
+        value = api.put(f'{P}/pubsub/{topic}', json={'headers': {}, 'message': 0}).json()['number_of_subscribers']
+        if isinstance(value, str):    # volttron-lib-zmq#25: the packed count arrives as a 4-character string
+            value = int.from_bytes(value.encode('latin-1'), 'little')
+        return value
+
+    def test_closing_a_socket_releases_its_subscription(self, api, P):
+        topic = 'e2e/release'
+        baseline = self._subscriber_count(api, P, topic)     # the listener agent, if nothing else
+        ws = websocket.create_connection(self._ws_url(api, P, topic),
+                                         header=[f'Authorization: Bearer {api.access_token}'], timeout=30)
+        try:
+            wait_until(lambda: self._subscriber_count(api, P, topic) > baseline or None,
+                       timeout=15, message='the open socket was not counted as a subscriber')
+        finally:
+            ws.close()
+        wait_until(lambda: self._subscriber_count(api, P, topic) == baseline or None,
+                   timeout=15, message='subscriber count did not return to baseline after the socket closed')

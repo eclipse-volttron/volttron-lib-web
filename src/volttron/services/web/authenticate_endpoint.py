@@ -195,6 +195,7 @@ class AuthenticateEndpoints(object):
         if user is None:
             _log.warning("Failed web login attempt from {}".format(env.get('REMOTE_ADDR')))
             return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
+        user['sub'] = username    # names the user in every token of the session, independent of the session id
         access_token, refresh_token = self._get_tokens(user)
         response = Response(json.dumps({"refresh_token": refresh_token, "access_token": access_token}),
                             content_type="application/json")

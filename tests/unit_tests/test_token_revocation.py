@@ -89,6 +89,7 @@ def test_login_tokens_share_one_session_id_and_renewal_inherits_it(server):
     tokens = _login(endpoints)
     access, refresh = _claims(tokens["access_token"], secret), _claims(tokens["refresh_token"], secret)
     assert session_id(access) and session_id(access) == session_id(refresh)
+    assert access['sub'] == refresh['sub'] == USER    # the user is named independently of the session
     renewed = json.loads(_renew(endpoints, tokens["refresh_token"]).get_data())["access_token"]
     assert session_id(_claims(renewed, secret)) == session_id(access)
     # A second login is a different session.
