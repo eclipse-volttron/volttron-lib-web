@@ -22,66 +22,157 @@
 # ===----------------------------------------------------------------------===
 # }}}
 
-def test_vui_pubsub_manager_init():
-    # TODO: write_test
-    pass
+"""Lifecycle of VUI subscription websockets: bookkeeping by login session and release of the bus subscription."""
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from volttron.services.web.token_revocation import SESSION_CLAIM
+from volttron.services.web.vui_pubsub import POLICY_VIOLATION, VUIPubsubManager, VUIWebSocket
 
 
-def test_create_websocket():
-    # TODO: write_test
-    pass
+class FakeSocket(VUIWebSocket):
+    """A VUIWebSocket without a transport. ws4py's ``terminated`` property reads the two flags."""
+
+    def __init__(self):
+        self.client_terminated = self.server_terminated = False
+        self.environ = {}
+        self.closed_with = None
+        self.sent = []
+
+    def close(self, code=1000, reason=''):
+        self.closed_with = (code, reason)
+        self.client_terminated = self.server_terminated = True
+
+    def send(self, payload, binary=False):
+        self.sent.append(payload)
 
 
-def test_client_opened():
-    # TODO: write_test
-    pass
+def claims_for(sid, groups=('vui',), **extra):
+    return {SESSION_CLAIM: sid, 'grant_type': 'access_token', 'groups': list(groups), **extra}
 
 
-def test_close_socket():
-    # TODO: write_test
-    pass
+@pytest.fixture
+def manager():
+    agent = MagicMock()
+    agent.get_user_claims = MagicMock(return_value=claims_for('s1'))
+    return VUIPubsubManager(agent)
 
 
-def test_get_socket_routes():
-    # TODO: write_test
-    pass
+def _open(manager, sid='s1', topic='devices/a', token=None, **extra):
+    sock = FakeSocket()
+    manager.client_opened(sock, topic, token or f'token-{sid}', claims_for(sid, **extra))
+    return sock
 
 
-def test_open_subscription_socket():
-    # TODO: write_test
-    pass
+class TestOpenAndClose:
+    def test_opened_socket_is_subscribed_and_filed_under_its_session(self, manager):
+        sock = _open(manager, 's1', 'devices/a')
+        manager._agent.vip.pubsub.subscribe.assert_called_once_with('pubsub', 'devices/a', sock.on_topic)
+        assert sock.vui_topic == 'devices/a' and sock.vui_sid == 's1' and sock.vui_token == 'token-s1'
+        assert manager._sockets == {'s1': {sock}}
+
+    def test_client_closed_unsubscribes_and_forgets_the_socket(self, manager):
+        sock = _open(manager)
+        assert manager.client_closed(sock) is True
+        manager._agent.vip.pubsub.unsubscribe.assert_called_once_with('pubsub', 'devices/a', sock.on_topic)
+        assert manager._sockets == {}
+
+    def test_client_closed_is_idempotent_and_ignores_unknown_sockets(self, manager):
+        sock = _open(manager)
+        manager.client_closed(sock)
+        assert manager.client_closed(sock) is False
+        assert manager.client_closed(FakeSocket()) is False
+        assert manager._agent.vip.pubsub.unsubscribe.call_count == 1
+
+    def test_closing_one_socket_leaves_another_on_the_same_topic_subscribed(self, manager):
+        first, second = _open(manager, 's1', 'devices/a'), _open(manager, 's2', 'devices/a')
+        manager.client_closed(first)
+        unsubscribed = [c.args[2] for c in manager._agent.vip.pubsub.unsubscribe.call_args_list]
+        assert unsubscribed == [first.on_topic]
+        assert manager._sockets == {'s2': {second}}
+
+    def test_ws4py_closed_callback_reaches_the_manager(self, manager):
+        sock = _open(manager)
+        sock.environ = {'ws4py.app': manager}
+        sock.closed(1000, 'client left')
+        manager._agent.vip.pubsub.unsubscribe.assert_called_once()
+        assert manager._sockets == {}
+
+    def test_closed_callback_without_an_app_is_harmless(self):
+        FakeSocket().closed(1000)
+
+    def test_close_socket_releases_then_closes_with_policy_code(self, manager):
+        sock = _open(manager)
+        assert manager.close_socket(sock, 'Because') is True
+        assert sock.closed_with == (POLICY_VIOLATION, 'Because')
+        manager._agent.vip.pubsub.unsubscribe.assert_called_once()
+        # Already terminated: bookkeeping is clean and nothing more is closed.
+        assert manager.close_socket(sock, 'Again') is False
+
+    def test_close_failure_is_logged_not_raised(self, manager):
+        sock = _open(manager)
+        sock.close = MagicMock(side_effect=RuntimeError('socket gone'))
+        assert manager.close_socket(sock, 'Because') is False
+        assert manager._sockets == {}
+
+    def test_unsubscribe_failure_is_logged_not_raised(self, manager):
+        sock = _open(manager)
+        manager._agent.vip.pubsub.unsubscribe.side_effect = RuntimeError('bus gone')
+        assert manager.client_closed(sock) is True
+        assert manager._sockets == {}
 
 
-def test_publish():
-    # TODO: write_test
-    pass
+class TestSessionRevocation:
+    def test_close_session_sockets_closes_and_unsubscribes_every_socket_of_the_session(self, manager):
+        a, b = _open(manager, 's1', 'devices/a'), _open(manager, 's1', 'devices/b')
+        other = _open(manager, 's2', 'devices/a')
+        assert manager.close_session_sockets('s1') == 2
+        assert a.closed_with == (POLICY_VIOLATION, 'Session revoked') and b.terminated
+        assert not other.terminated
+        assert manager._agent.vip.pubsub.unsubscribe.call_count == 2
+        assert manager._sockets == {'s2': {other}}
+        assert manager.close_session_sockets('s1') == 0 and manager.close_session_sockets('nope') == 0
 
 
-def test_vui_web_socket_init():
-    # TODO: write_test
-    pass
+class TestRoutesAndVerification:
+    def test_socket_routes_list_the_sessions_open_topics(self, manager):
+        _open(manager, 's1', 'devices/a')
+        gone = _open(manager, 's1', 'devices/b')
+        gone.client_terminated = gone.server_terminated = True
+        _open(manager, 's2', 'devices/c')
+        assert set(manager.get_socket_routes('token-s1')) == {'devices/a'}
+
+    def test_socket_routes_of_an_unverifiable_token_are_empty(self, manager):
+        _open(manager, 's1', 'devices/a')
+        manager._agent.get_user_claims = MagicMock(side_effect=ValueError('bad token'))
+        assert manager.get_socket_routes('token-s1') == {}
+
+    @pytest.mark.parametrize('claims', [None, {}, {'groups': ['admin']}, {'groups': 'vui'}, {'groups': None}])
+    def test_verify_token_requires_the_vui_group(self, manager, claims):
+        manager._agent.get_user_claims = MagicMock(return_value=claims)
+        assert manager.verify_token('tok') is None
+
+    def test_verify_token_never_raises(self, manager):
+        manager._agent.get_user_claims = MagicMock(side_effect=RuntimeError('boom'))
+        assert manager.verify_token('tok') is None
+        assert manager.verify_token(None) is None
+
+    def test_open_subscription_socket_returns_a_wsgi_application(self, manager):
+        app = manager.open_subscription_socket('tok', 'devices/a')
+        assert app.handler_cls is VUIWebSocket
+        assert manager._sockets == {}    # nothing is recorded before the socket verifies its token
 
 
-def test_get_topic():
-    # TODO: write_test
-    pass
+class TestOnTopic:
+    def test_message_is_forwarded_as_json(self, manager):
+        sock = _open(manager)
+        sock.on_topic('peer', 'sender', 'pubsub', 'devices/a', {}, {'point': 1})
+        assert sock.sent == ['{"point": 1}']
 
-
-def test_closed():
-    # TODO: write_test
-    pass
-
-
-def test_on_topic():
-    # TODO: write_test
-    pass
-
-
-def test_opened():
-    # TODO: write_test
-    pass
-
-
-def test_received_message():
-    # TODO: write_test
-    pass
+    def test_terminated_socket_receives_nothing(self, manager):
+        sock = _open(manager)
+        sock.client_terminated = sock.server_terminated = True
+        sock.on_topic('peer', 'sender', 'pubsub', 'devices/a', {}, 1)
+        assert sock.sent == []
