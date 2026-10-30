@@ -27,11 +27,20 @@
 A subscription websocket belongs to the login session whose access token opened it. The
 manager keeps the open sockets per session so that revoking the session closes them, and
 each socket's message-bus subscription is released when the socket closes.
+
+A socket lives no longer than its access token. The client keeps a long-lived subscription
+by sending a renewed access token over the socket (a text frame ``{"access_token": "..."}``)
+before the current one expires; a token of the same login session, or of a new login by the
+same user, is accepted. A socket whose token has expired, or whose session has been revoked,
+is closed with code 1008. A periodic sweep catches idle sockets that receive no messages.
 """
 
 import json
 import logging
+import time
 from collections import defaultdict
+
+from volttron.utils.scheduling import periodic
 
 from ws4py.server.wsgiutils import WebSocketWSGIApplication
 from ws4py.websocket import WebSocket
@@ -45,9 +54,14 @@ POLICY_VIOLATION = 1008
 
 
 class VUIPubsubManager:
+    # How often idle sockets are re-checked against their token's expiry and revocation state. Bounds the time a
+    # socket can outlive its token when no message arrives to trigger the check in on_topic.
+    SWEEP_INTERVAL = 60
+
     def __init__(self, agent):
         self._agent = agent
         self._sockets = defaultdict(set)    # login session id -> open VUIWebSockets of that session
+        self._sweeper = None
 
     # ------------------------------------------------------------------ tokens
 
@@ -91,14 +105,74 @@ class VUIPubsubManager:
 
     # ------------------------------------------------------------------ socket lifecycle
 
+    @staticmethod
+    def _apply_claims(ws, access_token, claims):
+        """Record on the socket the token it is currently authorized by."""
+        ws.vui_token = access_token
+        ws.vui_sid = session_id(claims)
+        sub = claims.get('sub')
+        ws.vui_sub = sub if isinstance(sub, str) and sub else None
+        exp = claims.get('exp')
+        ws.vui_exp = float(exp) if isinstance(exp, (int, float)) and not isinstance(exp, bool) else None
+
     def client_opened(self, ws, topic, access_token, claims):
         """Record an opened socket under its login session and subscribe it to ``topic``."""
         ws.vui_topic = topic
-        ws.vui_token = access_token
-        ws.vui_sid = session_id(claims)
+        self._apply_claims(ws, access_token, claims)
         _log.debug(f'VUIPubsubManager: subscribing a websocket to {topic!r}')
         self._agent.vip.pubsub.subscribe('pubsub', topic, ws.on_topic)
         self._sockets[ws.vui_sid].add(ws)
+        self._ensure_sweeper()
+
+    def renew_socket(self, ws, access_token):
+        """Re-authorize an open socket with a renewed access token. Returns True when accepted.
+
+        The token must verify and belong either to the socket's login session or to a new login by the same
+        user (``sub`` claim). A socket that has already been closed cannot be renewed.
+        """
+        claims = self.verify_token(access_token)
+        if claims is None or ws not in self._sockets.get(getattr(ws, 'vui_sid', None), ()):
+            return False
+        new_sid, sub = session_id(claims), claims.get('sub')
+        same_session = new_sid == ws.vui_sid
+        same_user = isinstance(sub, str) and bool(sub) and sub == ws.vui_sub
+        if not (same_session or same_user):
+            _log.warning(f'Refused to renew a websocket for {ws.vui_topic!r} with a token of another user.')
+            return False
+        if not same_session:
+            self._sockets[ws.vui_sid].discard(ws)
+            if not self._sockets[ws.vui_sid]:
+                del self._sockets[ws.vui_sid]
+            self._sockets[new_sid].add(ws)
+        self._apply_claims(ws, access_token, claims)
+        return True
+
+    def revalidate_sockets(self):
+        """Close every open socket whose token has expired or no longer verifies. Returns the number closed."""
+        now, closed = time.time(), 0
+        for ws in [ws for sockets in list(self._sockets.values()) for ws in sockets]:
+            if ws.terminated:
+                self.client_closed(ws)
+            elif ws.vui_exp is not None and now >= ws.vui_exp:
+                closed += self.close_socket(ws, 'Token expired')
+            elif self.verify_token(ws.vui_token) is None:
+                closed += self.close_socket(ws, 'Not Authorized')
+        if closed:
+            _log.info(f'Closed {closed} websocket(s) whose access token expired or was revoked.')
+        return closed
+
+    def _ensure_sweeper(self):
+        """Start the periodic re-validation once the first socket is open (not in __init__: the agent's core may
+        not be running yet, and unit tests build managers without one)."""
+        if self._sweeper is not None:
+            return
+        core = getattr(self._agent, 'core', None)
+        if core is None:
+            return
+        try:
+            self._sweeper = core.schedule(periodic(self.SWEEP_INTERVAL), self.revalidate_sockets)
+        except Exception as e:
+            _log.warning(f'Could not schedule websocket re-validation: {e.__class__.__name__}')
 
     def client_closed(self, ws):
         """Forget a socket and release its message-bus subscription. Idempotent; returns True when it did anything."""
@@ -156,8 +230,28 @@ class VUIWebSocket(WebSocket):
             return
         app.client_opened(self, topic, access_token, claims)
 
+    RENEWAL_HELP = 'Unrecognised message. Send {"access_token": "<renewed access token>"} to keep the subscription open.'
+
     def received_message(self, m):
-        pass
+        """The only message a client may send is a renewed access token, as a JSON text frame."""
+        app = self.environ.get('ws4py.app')
+        try:
+            body = json.loads(m.data.decode('utf-8') if isinstance(m.data, bytes) else m.data)
+        except (ValueError, AttributeError, UnicodeDecodeError):
+            body = None
+        token = body.get('access_token') if isinstance(body, dict) else None
+        if not isinstance(token, str) or app is None:
+            self._reply({'error': self.RENEWAL_HELP})
+        elif app.renew_socket(self, token):
+            self._reply({'renewed': True, 'expires': int(self.vui_exp) if self.vui_exp else None})
+        else:
+            self._reply({'error': 'Not Authorized'})
+
+    def _reply(self, body):
+        try:
+            self.send(json.dumps(body))
+        except Exception as e:
+            _log.warning(f'Error replying on a subscription websocket: {e.__class__.__name__}')
 
     def closed(self, code, reason=None):
         app = self.environ.get('ws4py.app') if hasattr(self, 'environ') else None
@@ -166,6 +260,14 @@ class VUIWebSocket(WebSocket):
 
     def on_topic(self, peer, sender, bus, topic, headers, message):
         if self.terminated:
+            return
+        exp = getattr(self, 'vui_exp', None)
+        if exp is not None and time.time() >= exp:
+            app = self.environ.get('ws4py.app')
+            if app is not None:
+                app.close_socket(self, 'Token expired')
+            else:
+                self.close(code=POLICY_VIOLATION, reason='Token expired')
             return
         try:
             self.send(json.dumps(message))

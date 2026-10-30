@@ -24,6 +24,8 @@
 
 """Lifecycle of VUI subscription websockets: bookkeeping by login session and release of the bus subscription."""
 
+import json
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -176,3 +178,121 @@ class TestOnTopic:
         sock.client_terminated = sock.server_terminated = True
         sock.on_topic('peer', 'sender', 'pubsub', 'devices/a', {}, 1)
         assert sock.sent == []
+
+
+# ---------------------------------------------------------------- token lifetime and renewal
+
+def _message(payload):
+    m = MagicMock()
+    m.data = payload if isinstance(payload, bytes) else payload.encode('utf-8')
+    return m
+
+
+class TestTokenLifetime:
+    def test_claims_are_recorded_on_the_socket(self, manager):
+        sock = _open(manager, 's1', 'devices/a', sub='alice', exp=1_700_000_000)
+        assert (sock.vui_sub, sock.vui_exp) == ('alice', 1_700_000_000.0)
+        plain = _open(manager, 's2', 'devices/a', exp=True)   # bool is not a time; no sub claim
+        assert (plain.vui_sub, plain.vui_exp) == (None, None)
+
+    def test_on_topic_closes_an_expired_socket_instead_of_sending(self, manager):
+        sock = _open(manager, exp=time.time() - 1)
+        sock.environ = {'ws4py.app': manager}
+        sock.on_topic('peer', 'sender', 'pubsub', 'devices/a', {}, 1)
+        assert sock.sent == [] and sock.closed_with == (POLICY_VIOLATION, 'Token expired')
+        manager._agent.vip.pubsub.unsubscribe.assert_called_once()
+
+    def test_on_topic_sends_while_the_token_is_valid(self, manager):
+        sock = _open(manager, exp=time.time() + 60)
+        sock.on_topic('peer', 'sender', 'pubsub', 'devices/a', {}, 1)
+        assert sock.sent == ['1']
+
+    def test_sweep_closes_expired_and_unverifiable_sockets_and_keeps_the_rest(self, manager):
+        expired = _open(manager, 's1', 'devices/a', exp=time.time() - 1)
+        revoked = _open(manager, 's2', 'devices/b', token='revoked', exp=time.time() + 60)
+        fine = _open(manager, 's3', 'devices/c', token='fine', exp=time.time() + 60)
+        gone = _open(manager, 's4', 'devices/d')
+        gone.client_terminated = gone.server_terminated = True
+        manager._agent.get_user_claims = lambda token: {} if token == 'revoked' else claims_for('s3')
+        assert manager.revalidate_sockets() == 2
+        assert expired.closed_with == (POLICY_VIOLATION, 'Token expired')
+        assert revoked.closed_with == (POLICY_VIOLATION, 'Not Authorized')
+        assert fine.closed_with is None
+        assert manager._sockets == {'s3': {fine}}     # the terminated socket was dropped from the books
+        assert manager._agent.vip.pubsub.unsubscribe.call_count == 3
+
+    def test_sweep_is_scheduled_once_when_the_first_socket_opens(self, manager):
+        manager._agent.core.schedule.assert_not_called()
+        _open(manager, 's1', 'devices/a')
+        _open(manager, 's1', 'devices/b')
+        manager._agent.core.schedule.assert_called_once()
+        assert manager._agent.core.schedule.call_args.args[1] == manager.revalidate_sockets
+
+    def test_manager_without_a_core_does_not_schedule(self):
+        agent = MagicMock(spec=['vip', 'get_user_claims'])
+        VUIPubsubManager(agent).client_opened(FakeSocket(), 'devices/a', 'tok', claims_for('s1'))
+
+    def test_scheduling_failure_is_logged_not_raised(self, manager):
+        manager._agent.core.schedule.side_effect = RuntimeError('no hub')
+        _open(manager)
+
+
+class TestRenewal:
+    def test_token_of_the_same_session_extends_the_socket(self, manager):
+        sock = _open(manager, 's1', 'devices/a', exp=time.time() + 10)
+        manager._agent.get_user_claims = MagicMock(return_value=claims_for('s1', exp=time.time() + 900))
+        assert manager.renew_socket(sock, 'new-token') is True
+        assert sock.vui_token == 'new-token' and sock.vui_exp > time.time() + 800
+        assert manager._sockets == {'s1': {sock}}
+
+    def test_token_of_a_new_login_by_the_same_user_moves_the_socket(self, manager):
+        sock = _open(manager, 's1', 'devices/a', sub='alice')
+        manager._agent.get_user_claims = MagicMock(return_value=claims_for('s2', sub='alice'))
+        assert manager.renew_socket(sock, 'new-token') is True
+        assert sock.vui_sid == 's2' and manager._sockets == {'s2': {sock}}
+        # Revoking the old session no longer touches it; revoking the new one does.
+        assert manager.close_session_sockets('s1') == 0 and not sock.terminated
+        assert manager.close_session_sockets('s2') == 1 and sock.terminated
+
+    @pytest.mark.parametrize('claims', [claims_for('s2', sub='bob'), claims_for('s2'), {}, None,
+                                        claims_for('s2', groups=['admin'], sub='alice')])
+    def test_tokens_of_another_user_or_without_vui_are_refused(self, manager, claims):
+        sock = _open(manager, 's1', 'devices/a', sub='alice', exp=time.time() + 10)
+        manager._agent.get_user_claims = MagicMock(return_value=claims)
+        assert manager.renew_socket(sock, 'new-token') is False
+        assert sock.vui_sid == 's1' and sock.vui_token == 'token-s1' and not sock.terminated
+
+    def test_a_socket_opened_without_a_user_claim_accepts_only_its_own_session(self, manager):
+        sock = _open(manager, 's1', 'devices/a')
+        manager._agent.get_user_claims = MagicMock(return_value=claims_for('s2', sub='alice'))
+        assert manager.renew_socket(sock, 'new-token') is False
+
+    def test_a_closed_socket_cannot_be_renewed(self, manager):
+        sock = _open(manager)
+        manager.client_closed(sock)
+        assert manager.renew_socket(sock, 'token-s1') is False
+
+    def test_received_renewal_frame_is_answered(self, manager):
+        sock = _open(manager, 's1', 'devices/a', exp=time.time() + 10)
+        sock.environ = {'ws4py.app': manager}
+        manager._agent.get_user_claims = MagicMock(return_value=claims_for('s1', exp=1_900_000_000))
+        sock.received_message(_message(json.dumps({'access_token': 'new-token'})))
+        assert json.loads(sock.sent[-1]) == {'renewed': True, 'expires': 1_900_000_000}
+        assert sock.vui_token == 'new-token'
+
+    def test_received_refused_token_is_answered_and_socket_stays_open(self, manager):
+        sock = _open(manager, 's1', 'devices/a')
+        sock.environ = {'ws4py.app': manager}
+        manager._agent.get_user_claims = MagicMock(return_value={})
+        sock.received_message(_message(json.dumps({'access_token': 'nope'})))
+        assert json.loads(sock.sent[-1]) == {'error': 'Not Authorized'}
+        assert not sock.terminated and sock.vui_token == 'token-s1'
+
+    @pytest.mark.parametrize('payload', [b'hello', b'{"other": 1}', b'["access_token"]', b'{"access_token": 5}',
+                                         b'\xff\xfe'])
+    def test_other_messages_get_the_help_text(self, manager, payload):
+        sock = _open(manager)
+        sock.environ = {'ws4py.app': manager}
+        sock.received_message(_message(payload))
+        assert json.loads(sock.sent[-1]) == {'error': VUIWebSocket.RENEWAL_HELP}
+        manager._agent.get_user_claims.assert_not_called()

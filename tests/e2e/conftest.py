@@ -14,8 +14,34 @@ import requests
 from platform_cli import PlatformCLI
 
 MODULAR = Path(__file__).resolve().parents[3]
-PLATFORM_DRIVER_SOURCE = str(MODULAR / 'drivers' / 'platform-driver-agent')
-FAKE_DRIVER_DIR = MODULAR / 'drivers' / 'interfaces' / 'fake'
+
+
+def _editable_source(distribution: str) -> Path | None:
+    """The source checkout a distribution was installed editable from, if any."""
+    from importlib import metadata
+    try:
+        direct_url = metadata.distribution(distribution).read_text('direct_url.json')
+    except metadata.PackageNotFoundError:
+        return None
+    info = json.loads(direct_url) if direct_url else {}
+    if info.get('dir_info', {}).get('editable'):
+        return Path(info['url'].removeprefix('file://'))
+    return None
+
+
+def _source(distribution: str, monorepo_path: Path) -> Path | None:
+    """Prefer the editable checkout in the test venv, then the monorepo layout beside this repository."""
+    editable = _editable_source(distribution)
+    if editable is not None and editable.is_dir():
+        return editable
+    return monorepo_path if monorepo_path.is_dir() else None
+
+
+# The Platform Driver is installed from its source checkout when one is known, otherwise from PyPI by name.
+PLATFORM_DRIVER_SOURCE = str(_source('volttron-platform-driver', MODULAR / 'drivers' / 'platform-driver-agent')
+                             or 'volttron-platform-driver')
+# fake.config and fake.csv ship at the root of the fake driver's source tree, not in its package.
+FAKE_DRIVER_DIR = _source('volttron-lib-fake-driver', MODULAR / 'drivers' / 'interfaces' / 'fake')
 REGISTRY_CONFIG = 'registry_configs/fake.csv'
 
 PLATFORM_DRIVER = 'platform.driver'
@@ -57,6 +83,9 @@ def platform(tmp_path_factory):
         pytest.skip('WEB_SKIP_E2E is set')
     if not PlatformCLI.available():
         pytest.skip('volttron, vctl and a message bus package (volttron-lib-zmq) are not all installed in this environment')
+    if FAKE_DRIVER_DIR is None:
+        pytest.skip('the fake driver source tree (fake.config, fake.csv) was not found; install volttron-lib-fake-driver '
+                    'editable from its checkout')
     cli = PlatformCLI(tmp_path_factory.mktemp('platform') / 'volttron_home', rpc_allow_list=RPC_ALLOW_LIST)
     cli.start()
     try:
