@@ -118,7 +118,8 @@ class TestWebsocketRevalidatesToken:
         ws, app, agent = self._socket(mock_platform_web_service, 'Bearer good')
         ws.opened()
         ws.close.assert_not_called()
-        agent.vip.pubsub.subscribe.assert_called_once_with('pubsub', 'devices/campus/building/point', ws.on_topic)
+        agent.vip.pubsub.subscribe.assert_called_once_with('pubsub', 'devices/campus/building/point',
+                                                           app.dispatcher('devices/campus/building/point'))
         assert ws.vui_topic == 'devices/campus/building/point' and ws.vui_token == 'good'
 
     def test_missing_token_closes_socket(self, mock_platform_web_service):
