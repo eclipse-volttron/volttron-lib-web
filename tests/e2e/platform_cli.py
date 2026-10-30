@@ -94,10 +94,23 @@ class PlatformCLI:
                     'PYTHON_KEYRING_BACKEND': 'keyring.backends.null.Keyring'}
         self.process: subprocess.Popen | None = None
 
+    # Distributions that provide a message bus, and with it the CredentialsStore the auth service needs. A venv with
+    # volttron-core but none of these (CI installs only the web service's own dependencies) cannot start a platform.
+    MESSAGE_BUS_DISTRIBUTIONS = ('volttron-lib-zmq',)
+
     @classmethod
     def available(cls) -> bool:
+        from importlib import metadata
         bin = Path(sys.executable).parent
-        return all((bin / exe).exists() for exe in ('volttron', 'vctl'))
+        if not all((bin / exe).exists() for exe in ('volttron', 'vctl')):
+            return False
+        for name in cls.MESSAGE_BUS_DISTRIBUTIONS:
+            try:
+                metadata.distribution(name)
+                return True
+            except metadata.PackageNotFoundError:
+                continue
+        return False
 
     # ------------------------------------------------------------------ lifecycle
 
