@@ -49,7 +49,7 @@ def platform(tmp_path_factory):
     if os.environ.get('WEB_SKIP_E2E'):
         pytest.skip('WEB_SKIP_E2E is set')
     if not PlatformCLI.available():
-        pytest.skip('volttron and vctl are not installed in this environment')
+        pytest.skip('volttron, vctl and a message bus package (volttron-lib-zmq) are not all installed in this environment')
     cli = PlatformCLI(tmp_path_factory.mktemp('platform') / 'volttron_home', rpc_allow_list=RPC_ALLOW_LIST)
     cli.start()
     try:
