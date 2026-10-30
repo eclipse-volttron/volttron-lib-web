@@ -503,3 +503,11 @@ def test_renew_accepts_an_empty_or_object_body(admin_endpoints, data):
     env = get_test_web_env('/authenticate', method='PUT', HTTP_AUTHORIZATION=f"BEARER {tokens['refresh_token']}")
     response = authorize_ep.handle_authenticate(env, data)
     assert '200' in response.status, response.response
+
+
+@pytest.mark.parametrize('data', [{"username": "test_admin", "password": "x" * 1025},
+                                  {"username": "u" * 257, "password": "Pass123"}])
+def test_login_refuses_overlong_credentials(admin_endpoints, data):
+    authorize_ep, _ = admin_endpoints
+    response = authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'), data)
+    assert '401' in response.status

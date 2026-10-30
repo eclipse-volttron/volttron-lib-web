@@ -44,6 +44,10 @@ from .token_revocation import (RevokedSessions, REVOKED_SESSIONS_FILE, SESSION_C
 
 _log = logging.getLogger(__name__)
 
+# Bounds on login credentials, so an unauthenticated caller cannot make the service hash an arbitrarily long password.
+MAX_USERNAME_LENGTH = 256
+MAX_PASSWORD_LENGTH = 1024
+
 # Hash verified against when a login names an unknown user, so that the response time does not reveal which
 # usernames exist. Generated once at import; the password is never accepted.
 _UNKNOWN_USER_HASH = argon2.hash(os.urandom(32).hex())
@@ -187,6 +191,8 @@ class AuthenticateEndpoints(object):
             error += "Invalid username passed"
         if not isinstance(password, str) or not password:
             error += "Invalid password passed"
+        elif len(password) > MAX_PASSWORD_LENGTH or (isinstance(username, str) and len(username) > MAX_USERNAME_LENGTH):
+            error += "Credentials too long"    # bound the work argon2 does for an unauthenticated caller
 
         if error:
             _log.error("Invalid parameters passed: {}".format(error))
