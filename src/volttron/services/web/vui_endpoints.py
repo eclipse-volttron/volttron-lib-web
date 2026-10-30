@@ -496,7 +496,7 @@ class VUIEndpoints:
                     try:
                         agents = [a for a in agents
                                   if self._agent_matches(records.get(a, {'identity': a}), tag_glob, regex)]
-                    except re.error as e:
+                    except (re.error, OverflowError, RecursionError) as e:
                         return Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
                 return Response(json.dumps(self._links(path_info, agents)), 200,
                                 content_type='application/json')
@@ -563,7 +563,7 @@ class VUIEndpoints:
                 if regex is not None:
                     try:
                         re.compile(regex)
-                    except re.error as e:
+                    except (re.error, OverflowError, RecursionError) as e:
                         return Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
                 active_routes['links'] = {k: v for k, v in active_routes['links'].items() if k in self.SELECTION_ROUTES}
                 return Response(json.dumps(active_routes), 200, content_type='application/json')
@@ -987,7 +987,7 @@ class VUIEndpoints:
         records = self._agent_records(platform, include_hidden)
         try:
             return {i: r for i, r in records.items() if self._agent_matches(r, tag_glob, regex)}, None
-        except re.error as e:
+        except (re.error, OverflowError, RecursionError) as e:
             return {}, Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
 
     def _running_for_selection(self, platform: str, query_params: dict, request_method: str, restart: bool

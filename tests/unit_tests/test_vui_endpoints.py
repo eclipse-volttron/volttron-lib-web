@@ -1423,3 +1423,16 @@ def test_wildcard_agent_route_validates_the_regex(mock_platform_web_service, que
     check_response_codes(response, status)
     if status == '400':
         assert 'Invalid regex' in json.loads(response.response[0])['error']
+
+
+@pytest.mark.parametrize('query', ['regex=a{4294967296}', 'regex=' + '(' * 600 + 'a' + ')' * 600])
+def test_pathological_regexes_are_400_not_500(mock_platform_web_service, query):
+    for path in ('/vui/platforms/my_instance_name/agents/-', '/vui/platforms/my_instance_name/agents'):
+        env = get_test_web_env(path, method='GET', query_string=query, HTTP_AUTHORIZATION='BEARER foo')
+        vui_endpoints = VUIEndpoints(mock_platform_web_service)
+        vui_endpoints.active_routes = ACTIVE_ROUTES
+        vui_endpoints._rpc = _mock_agents_rpc
+        handler = (vui_endpoints.handle_platforms_agents_agent if path.endswith('/-')
+                   else vui_endpoints.handle_platforms_agents)
+        response = handler(env, {})
+        check_response_codes(response, '400')

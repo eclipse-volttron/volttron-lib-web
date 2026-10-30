@@ -241,7 +241,7 @@ class AuthenticateEndpoints(object):
         :return:
         """
         if data and not isinstance(data, dict):
-            _log.warning(f"Invalid request body sent to {env.get('PATH_INFO')}")
+            _log.warning(f"Invalid request body sent to {env.get('PATH_INFO')!r}")
             return Response(json.dumps({'error': 'Invalid request body'}), status=401, content_type='application/json')
         current_access_token = data.get('current_access_token') if isinstance(data, dict) else None
         from ..web import get_bearer, get_user_claim_from_bearer, NotAuthorized
