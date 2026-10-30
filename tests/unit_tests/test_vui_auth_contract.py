@@ -31,7 +31,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from volttron.services.web.vui_endpoints import VUIEndpoints, endpoint
-from volttron.services.web.vui_pubsub import VUIWebSocket
+from volttron.services.web.vui_pubsub import VUIPubsubManager, VUIWebSocket
 
 from web_utils import get_test_web_env, mock_platform_web_service
 
@@ -102,41 +102,44 @@ class TestPubsubRouteRequiresAuthorization:
 
 
 class TestWebsocketRevalidatesToken:
+    """A socket verifies its own token when ws4py opens it; the upgrade request's check is not enough."""
+
     def _socket(self, agent, authorization):
         ws = VUIWebSocket.__new__(VUIWebSocket)
-        app = MagicMock()
-        app._agent = agent
+        agent.vip = MagicMock()    # the manager subscribes through the agent's pubsub subsystem
+        app = VUIPubsubManager(agent)
         ws.environ = {'PATH_INFO': PUBSUB, 'ws4py.app': app}
         if authorization:
             ws.environ['HTTP_AUTHORIZATION'] = authorization
         ws.close = MagicMock()
-        return ws, app
+        return ws, app, agent
 
     def test_valid_token_subscribes(self, mock_platform_web_service):
-        ws, app = self._socket(mock_platform_web_service, 'Bearer good')
+        ws, app, agent = self._socket(mock_platform_web_service, 'Bearer good')
         ws.opened()
         ws.close.assert_not_called()
-        app.client_opened.assert_called_once_with(ws, 'devices/campus/building/point', 'good')
+        agent.vip.pubsub.subscribe.assert_called_once_with('pubsub', 'devices/campus/building/point', ws.on_topic)
+        assert ws.vui_topic == 'devices/campus/building/point' and ws.vui_token == 'good'
 
     def test_missing_token_closes_socket(self, mock_platform_web_service):
-        ws, app = self._socket(mock_platform_web_service, None)
+        ws, app, agent = self._socket(mock_platform_web_service, None)
         ws.opened()
         ws.close.assert_called_once()
-        app.client_opened.assert_not_called()
+        agent.vip.pubsub.subscribe.assert_not_called()
 
     def test_invalid_token_closes_socket(self, mock_platform_web_service):
         mock_platform_web_service.get_user_claims = _reject
-        ws, app = self._socket(mock_platform_web_service, 'Bearer forged')
+        ws, app, agent = self._socket(mock_platform_web_service, 'Bearer forged')
         ws.opened()
         ws.close.assert_called_once()
-        app.client_opened.assert_not_called()
+        agent.vip.pubsub.subscribe.assert_not_called()
 
     def test_token_without_vui_group_closes_socket(self, mock_platform_web_service):
         mock_platform_web_service.get_user_claims = lambda bearer: {'groups': ['admin']}
-        ws, app = self._socket(mock_platform_web_service, 'Bearer admin-only')
+        ws, app, agent = self._socket(mock_platform_web_service, 'Bearer admin-only')
         ws.opened()
         ws.close.assert_called_once()
-        app.client_opened.assert_not_called()
+        agent.vip.pubsub.subscribe.assert_not_called()
 
 
 class TestEndpointDecoratorFailsClosed:
