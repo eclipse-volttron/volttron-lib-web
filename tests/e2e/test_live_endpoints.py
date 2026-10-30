@@ -91,6 +91,27 @@ class TestAuthenticate:
         assert r.status_code == 401
         assert r.json() == {'error': 'Not Authorized'}
 
+    @pytest.mark.parametrize('body', [{'username': ['a'], 'password': PASSWORD}, {'username': USERNAME, 'password': 7},
+                                      'text', ['a', 'b'], 7])
+    def test_malformed_login_input_is_401_not_500(self, base_url, body):
+        r = requests.post(f'{base_url}/authenticate', json=body, timeout=10)
+        assert r.status_code == 401, r.text
+
+    def test_non_json_login_body_with_json_content_type_is_400(self, base_url):
+        r = requests.post(f'{base_url}/authenticate', data=b'{bad json', headers={'Content-Type': 'application/json'},
+                          timeout=10)
+        assert r.status_code == 400, r.text
+        assert r.json() == {'error': 'Malformed JSON body'}
+
+    @pytest.mark.parametrize('body', ['"x"', '[1]', '7'])
+    def test_renew_with_a_non_object_body_is_401_not_500(self, base_url, body):
+        fresh = requests.post(f'{base_url}/authenticate', json={'username': USERNAME, 'password': PASSWORD},
+                              timeout=10).json()
+        r = requests.put(f'{base_url}/authenticate', data=body,
+                         headers={'Authorization': f"Bearer {fresh['refresh_token']}", 'Content-Type': 'application/json'},
+                         timeout=10)
+        assert r.status_code == 401, r.text
+
     def test_missing_fields_is_401(self, base_url):
         r = requests.post(f'{base_url}/authenticate', json={'username': USERNAME}, timeout=10)
         assert r.status_code == 401
@@ -378,6 +399,24 @@ class TestAgents:
 
 
 # ---------------------------------------------------------------------------- /agents/:id/configs
+
+class TestSpecParityAndSelection:
+    def test_invalid_regex_on_the_wildcard_agent_route_is_400(self, api, P):
+        r = api.get(f'{P}/agents/-?regex=(')
+        assert r.status_code == 400 and 'Invalid regex' in r.json()['error']
+        assert api.get(f'{P}/agents/-?regex=.').status_code == 200
+
+    @pytest.mark.parametrize('path', ['/vui/keypair', '/vui/devices', '/vui/historians', '{P}/auths', '{P}/roles',
+                                      '{P}/groups', '{P}/known-hosts', '{P}/statistics', '{P}/configs',
+                                      '{P}/agents/listener/frontends'])
+    def test_spec_paths_without_an_implementation_are_501(self, api, P, path):
+        r = api.get(path.format(P=P))
+        assert r.status_code == 501, r.text
+        assert 'not implemented' in r.json()['error']
+
+    def test_spec_path_without_a_token_is_401_not_404(self, base_url):
+        assert requests.get(f'{base_url}/vui/keypair', timeout=10).status_code == 401
+
 
 class TestAgentConfigs:
     def test_list_configs(self, api, P):

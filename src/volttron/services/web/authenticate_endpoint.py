@@ -169,22 +169,23 @@ class AuthenticateEndpoints(object):
             _log.error("No web users are configured. Create one with 'vctl web create-admin'.")
             return Response(json.dumps({'error': 'Not Authorized'}), status=401, content_type='application/json')
 
-        if not isinstance(data, dict):
+        if isinstance(data, dict):
+            username = data.get('username')
+            password = data.get('password')
+        elif isinstance(data, (str, bytes)):
             _log.debug("data is not a dict, decoding")
             decoded = dict((k, v if len(v) > 1 else v[0])
                            for k, v in parse_qs(data).items())
-
             username = decoded.get('username')
             password = decoded.get('password')
-
-        else:
-            username = data.get('username')
-            password = data.get('password')
+        else:    # a JSON body that is not an object
+            username = password = None
 
         error = ""
-        if username is None:
+        # Both must be strings: the username is looked up in a dict and the password handed to the hash check.
+        if not isinstance(username, str) or not username:
             error += "Invalid username passed"
-        if not password:
+        if not isinstance(password, str) or not password:
             error += "Invalid password passed"
 
         if error:
@@ -239,7 +240,10 @@ class AuthenticateEndpoints(object):
         :param data:
         :return:
         """
-        current_access_token = data.get('current_access_token')
+        if data and not isinstance(data, dict):
+            _log.warning(f"Invalid request body sent to {env.get('PATH_INFO')}")
+            return Response(json.dumps({'error': 'Invalid request body'}), status=401, content_type='application/json')
+        current_access_token = data.get('current_access_token') if isinstance(data, dict) else None
         from ..web import get_bearer, get_user_claim_from_bearer, NotAuthorized
         try:
             current_refresh_token = get_bearer(env)

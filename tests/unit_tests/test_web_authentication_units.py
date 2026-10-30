@@ -457,3 +457,49 @@ def test_vo003_jwt_encode_returns_str():
     decoded = jwt.decode(token, secret, algorithms=["HS256"])
     assert decoded["sub"] == "carol"
     assert decoded["groups"] == ["viewer"]
+
+# ---------------------------------------------------------------- malformed login and renewal input
+
+@pytest.fixture
+def admin_endpoints():
+    """(endpoints, user) in a fresh VOLTTRON_HOME; the file observer is stopped afterwards (inotify handles are finite)."""
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        authorize_ep, test_user = set_test_admin()
+        try:
+            yield authorize_ep, test_user
+        finally:
+            authorize_ep._observer.stop()
+
+
+def _tokens(authorize_ep, test_user):
+    return json.loads(authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'),
+                                                       test_user).response[0])
+
+
+@pytest.mark.parametrize('data', [{"username": ["a"], "password": "x"}, {"username": "a", "password": ["x"]},
+                                  {"username": 5, "password": "x"}, {"username": {"a": 1}, "password": "x"},
+                                  "text", ["a", "b"], 7, None])
+def test_login_refuses_non_string_credentials_and_non_object_bodies(admin_endpoints, data):
+    authorize_ep, _ = admin_endpoints
+    response = authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'), data)
+    assert '401' in response.status
+    assert 'access_token' not in response.response[0].decode('utf-8')
+
+
+@pytest.mark.parametrize('data', ["text", ["a"], 7, True])
+def test_renew_refuses_a_body_that_is_not_a_json_object(admin_endpoints, data):
+    authorize_ep, test_user = admin_endpoints
+    tokens = _tokens(authorize_ep, test_user)
+    env = get_test_web_env('/authenticate', method='PUT', HTTP_AUTHORIZATION=f"BEARER {tokens['refresh_token']}")
+    response = authorize_ep.handle_authenticate(env, data)
+    assert '401' in response.status
+
+
+@pytest.mark.parametrize('data', [{}, None, "", {"current_access_token": "x"}])
+def test_renew_accepts_an_empty_or_object_body(admin_endpoints, data):
+    authorize_ep, test_user = admin_endpoints
+    tokens = _tokens(authorize_ep, test_user)
+    env = get_test_web_env('/authenticate', method='PUT', HTTP_AUTHORIZATION=f"BEARER {tokens['refresh_token']}")
+    response = authorize_ep.handle_authenticate(env, data)
+    assert '200' in response.status, response.response

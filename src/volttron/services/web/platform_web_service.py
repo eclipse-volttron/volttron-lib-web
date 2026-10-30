@@ -583,7 +583,12 @@ class PlatformWebService(Agent):
         # agents (never credentials, see PEER_ENV_KEYS).
         # A websocket upgrade request (ws4py puts the raw socket in env['ws4py.socket']) carries no body; reading
         # wsgi.input for it blocks until the client closes the connection, so the handshake would never be sent.
-        data = '' if 'ws4py.socket' in env else env['wsgi.input'].read().decode('utf-8')
+        try:
+            data = '' if 'ws4py.socket' in env else env['wsgi.input'].read().decode('utf-8')
+        except UnicodeDecodeError:
+            _log.warning(f'Request body to {path_info!r} is not UTF-8')
+            return Response(jsonapi.dumps({'error': 'Request body is not UTF-8'}), 400,
+                            content_type='application/json')(env, start_response)
         passenv = {k: env[k] for k in PEER_ENV_KEYS if k in env}
 
         _log.debug('path_info is: {}'.format(path_info))
@@ -593,7 +598,12 @@ class PlatformWebService(Agent):
         _log.debug('Peer path_info is associated with: {}'.format(peer))
 
         if self.is_json_content(env):
-            data = jsonapi.loads(data)
+            try:
+                data = jsonapi.loads(data)
+            except (TypeError, ValueError):
+                _log.warning(f'Malformed JSON body in a request to {path_info!r}')
+                return Response(jsonapi.dumps({'error': 'Malformed JSON body'}), 400,
+                                content_type='application/json')(env, start_response)
 
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.

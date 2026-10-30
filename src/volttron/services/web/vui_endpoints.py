@@ -362,6 +362,32 @@ class VUIEndpoints:
         if self.active_routes['vui']['platforms']['pubsub']:
             self.pubsub_manager = VUIPubsubManager(self._agent)
 
+    UNIMPLEMENTED_SPEC_ROUTES = (
+        '^/vui/platforms/[^/]+/agents/[^/]+/frontends/?$',
+        '^/vui/platforms/[^/]+/agents/[^/]+/frontends/[^/]+/?$',
+        '^/vui/platforms/[^/]+/auths/?$',
+        '^/vui/platforms/[^/]+/auths/[^/]+/?$',
+        '^/vui/platforms/[^/]+/auths/[^/]+/publickeys/?$',
+        '^/vui/platforms/[^/]+/configs/?$',
+        '^/vui/platforms/[^/]+/configs/.+/?$',
+        '^/vui/platforms/[^/]+/groups/?$',
+        '^/vui/platforms/[^/]+/groups/[^/]+/?$',
+        '^/vui/platforms/[^/]+/known-hosts/?$',
+        '^/vui/platforms/[^/]+/known-hosts/[^/]+/?$',
+        '^/vui/platforms/[^/]+/roles/?$',
+        '^/vui/platforms/[^/]+/roles/[^/]+/?$',
+        '^/vui/platforms/[^/]+/statistics/?$',
+        '^/vui/devices/?$',
+        '^/vui/devices/hierarchy/?$',
+        '^/vui/devices/hierarchy/.+/?$',
+        '^/vui/devices/.+/?$',
+        '^/vui/historians/?$',
+        '^/vui/historians/[^/]+/?$',
+        '^/vui/historians/[^/]+/topics/?$',
+        '^/vui/historians/[^/]+/topics/.+/?$',
+        '^/vui/keypair/?$',
+    )
+
     def get_routes(self):
         """
         Returns a list of tuples with the routes for the administration endpoints
@@ -398,6 +424,10 @@ class VUIEndpoints:
             (re.compile('^/vui/platforms/[^/]+/pubsub/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/pubsub/.*/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/status/?$'), 'callable', self.handle_platforms_status),
+            # Paths the API specification (static/specs/vui.specs.yml) lists that this service does not implement
+            # answer a JSON 501 through @endpoint, as the unimplemented methods of implemented routes do, rather
+            # than a plain 404. tests/unit_tests/test_vui_spec_parity.py keeps this list and the specification in step.
+            *[(re.compile(pattern), 'callable', self.handle_not_implemented) for pattern in self.UNIMPLEMENTED_SPEC_ROUTES],
             # (re.compile('^/vui/devices/?$'), 'callable', self.handle_vui_devices),
             # (re.compile('^/vui/devices/.+/?$'), 'callable', self.handle_vui_devices_topic),
             # (re.compile('^/vui/devices/hierarchy/?$'), 'callable', self.handle_vui_devices_hierarchy),
@@ -528,6 +558,13 @@ class VUIEndpoints:
             active_routes = self._find_active_sub_routes(['vui', 'platforms', 'agents'], path_info=path_info)
             if vip_identity == self.WILDCARD_IDENTITY:
                 # The wildcard addresses a selection of agents; only the routes that act on a selection apply.
+                # A regex given here is not applied, but an invalid one is refused as it is on the selection routes.
+                regex = _parse_query_params(env.get('QUERY_STRING', '')).get('regex')
+                if regex is not None:
+                    try:
+                        re.compile(regex)
+                    except re.error as e:
+                        return Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
                 active_routes['links'] = {k: v for k, v in active_routes['links'].items() if k in self.SELECTION_ROUTES}
                 return Response(json.dumps(active_routes), 200, content_type='application/json')
             agent_state = self._get_agent_state(platform, vip_identity)
@@ -1281,6 +1318,11 @@ class VUIEndpoints:
         #     # DELETE -- For ../pubsub and /pubsub/:topic, Close open web sockets and subscriptions for this user.
         #     self.pubsub_manager.close_socket(access_token, topic)
         #     return Response(status=204)
+
+    @endpoint
+    def handle_not_implemented(self, env: dict, data: dict) -> Response | None:
+        """A path the API specification lists but this service does not implement. @endpoint answers 501."""
+        return None
 
     @endpoint
     def handle_platforms_historians(self, env: dict, data: dict) -> Response | None:

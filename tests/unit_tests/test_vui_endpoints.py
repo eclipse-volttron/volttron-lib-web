@@ -1408,3 +1408,18 @@ def test_wildcard_agent_links_only_selection_routes(mock_platform_web_service):
     vui = _vui_with_agents(mock_platform_web_service)
     code, body = _call(vui, 'handle_platforms_agents_agent', f'{P}/agents/-')
     assert code == 200 and set(body['links']) == {'running', 'enabled', 'status', 'health'}
+
+
+# ---------------------------------------------------------------- wildcard selection: regex validation
+
+@pytest.mark.parametrize('query, status', [('regex=(', '400'), ('regex=[', '400'), ('regex=run.*', '200'), ('', '200')])
+def test_wildcard_agent_route_validates_the_regex(mock_platform_web_service, query, status):
+    path = '/vui/platforms/my_instance_name/agents/-'
+    env = get_test_web_env(path, method='GET', query_string=query, HTTP_AUTHORIZATION='BEARER foo')
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.active_routes = ACTIVE_ROUTES
+    vui_endpoints._rpc = _mock_agents_rpc
+    response = vui_endpoints.handle_platforms_agents_agent(env, {})
+    check_response_codes(response, status)
+    if status == '400':
+        assert 'Invalid regex' in json.loads(response.response[0])['error']
