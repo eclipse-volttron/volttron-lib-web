@@ -32,8 +32,6 @@ try:
 except ImportError:
     pass
 
-from . discovery import DiscoveryInfo, DiscoveryError
-
 # Used outside so we make it available through this file.
 # removing below import from init as this cause jinja2 to be imported and causes gevent error when running
 # vctl web command even though the vct web command itself complete successfully
@@ -66,6 +64,18 @@ def get_bearer(env):
             return bearer
         else:
             return None
+
+
+def get_authorization_bearer(env):
+    """Return the token from an ``Authorization: Bearer`` header, or None.
+
+    Unlike get_bearer this never reads the cookie, which a browser attaches to requests that another site makes.
+    """
+    parts = (env.get('HTTP_AUTHORIZATION') or '').split(' ')
+    if len(parts) != 2 or parts[0].upper() != 'BEARER' or not parts[1]:
+        return None
+    return parts[1]
+
 
 def get_user_claim_from_bearer(bearer, web_secret_key=None, tls_public_key=None):
     if web_secret_key is None and tls_public_key is None:

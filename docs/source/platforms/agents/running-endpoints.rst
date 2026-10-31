@@ -11,6 +11,13 @@ This includes determining whether an agent is running as well as starting and st
     All Platforms Agents Running endpoints require a JWT bearer token obtained through the
     ``POST /authenticate`` or ``PUT /authenticate`` endpoints.
 
+
+.. note::
+
+    ``:agent`` may be the wildcard ``-`` to address several agents chosen with the ``tag``, ``regex`` and
+    ``include-hidden`` query parameters; the response is then keyed by VIP identity and ``PUT``/``DELETE`` report a
+    per-agent ``error``. See :ref:`Platforms-Agents-Selection`.
+
 --------------
 
 GET /platforms/:platform/agents/:agent/running
@@ -33,7 +40,7 @@ Response:
           .. code-block:: javascript
 
                 {
-                    "status": true|false
+                    "running": true|false
                 }
 
     * **With valid BEARER token on failure:** ``400 Bad Request``

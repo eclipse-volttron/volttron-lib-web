@@ -77,7 +77,7 @@ def mock_platform_web_service() -> PlatformWebService:
         store_message_bus_config('zmq', 'my_instance_name')
         opts = ServerOptions(volttron_home=volttron_home)
         opts.services['web'] = {'bind_web_address': 'http://127.0.0.1:8080',
-                                'web_secret_key': 'unit-test-secret-key'}
+                                'web_secret_key': 'unit-test-secret-key-that-is-long-enough-for-hs256'}
         with patch(target='volttron.services.web.vui_endpoints.Query', new=QueryHelper):
             platform_web = PlatformWebService(opts, credentials=Credentials(identity=PLATFORM_WEB), name="mock")
             # Internally the register uses this value to determine the caller's identity

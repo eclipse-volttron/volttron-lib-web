@@ -60,10 +60,14 @@ Ensure that it contains at least the following (where "my_instance_name" will be
 
 
 Finally, a user must be configured in the ``$VOLTTRON_HOME/web-users.json`` file to allow authentication to the API.
-This file can be generated, if it does not exist, by navigating to `bind-web-address`/admin in a web browser and
-creating a user and password:
+Users are created from the command line with the platform's environment active:
 
-.. image:: files/create_admin_user.png
+::
+
+    vctl web create-admin
+
+The command prompts for a username and password and adds the user with the ``admin`` and ``vui`` groups. The resulting
+file has the following form:
 
 .. code-block:: javascript
 
@@ -85,6 +89,16 @@ set to ``https://localhost:8443`` the following HTTP request (with a proper
 
 Access to the API may be disabled by removing "vui" from the list of groups in ``$VOLTTRON_HOME/web-users.json`` for any user which should not have access
 to the API.
+
+.. note::
+
+    The ``/vui/platforms/:platform/agents/:vip_identity/rpc/:method`` endpoint forwards calls using the web
+    service's own platform identity and is closed by default. The ``rpc-allow-list`` option of the ``[web]``
+    section of the platform configuration file opens specific agents and methods (see
+    :ref:`Platforms-Agents-Rpc-Endpoints`). Calls to the platform's own services (``platform.auth``,
+    ``platform.web``, ``config.store``, ``platform.driver``) and to the agent lifecycle and installation methods of
+    ``platform.control`` are always refused with ``403 Forbidden``; use the dedicated ``/agents`` and ``/devices``
+    endpoints for supported management and device operations.
 
 Path Structure
 ---------------
@@ -120,6 +134,8 @@ following sections:
           on the platform.
         - :ref:`Enabled <Platforms-Agents-Enabled-Endpoints>`: Endpoints for enabling, disabling, and setting the
           start priority of agents on the platform.
+        - :ref:`Health <Platforms-Agents-Health-Endpoints>`: Endpoints for retrieving the health of agents on the
+          platform.
         - :ref:`RPC <Platforms-Agents-Rpc-Endpoints>`: Endpoints allowing, discovery, inspection, and calling of
           remote procedure calls to agents running on the platform.
         - :ref:`Running <Platforms-Agents-Running-Endpoints>`: Endpoints for starting and stopping agents on the
@@ -128,6 +144,8 @@ following sections:
           running on the platform.
         - :ref:`Tag <Platforms-Agents-Tag-Endpoints>`: Endpoints for getting, setting, and deleting the tag of agents.
     - :ref:`Devices <Platforms-Devices-Endpoints>`: Endpoints for getting, setting, and resetting devices on the
+      platform.
+    - :ref:`Health <Platforms-Health-Endpoints>`: Endpoints for retrieving the health of every agent connected to the
       platform.
     - :ref:`Historians <Platforms-Historians-Endpoints>`: Endpoints for querying data from historians on the platform.
     - :ref:`Pubsub <Platforms-Pubsub-Endpoints>`: Endpoints for subscribing and publishing to the message bus on the

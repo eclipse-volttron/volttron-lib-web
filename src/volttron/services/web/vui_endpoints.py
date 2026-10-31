@@ -23,9 +23,14 @@
 # }}}
 
 import functools
+import fnmatch
+import hashlib
+import inspect
 import os
 import re
 import json
+from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from os.path import normpath, join
 from gevent.timeout import Timeout
 from collections import defaultdict
@@ -53,7 +58,7 @@ def _parse_query_params(query_string: str, allow_multiple: tuple = ()) -> dict:
 from werkzeug import Response
 
 
-from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_WEB
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_HEALTH, PLATFORM_WEB
 from volttron.client.vip.agent.subsystems.query import Query
 from volttron.utils.context import ClientContext
 from volttron.utils.jsonrpc import MethodNotFound, RemoteError
@@ -76,7 +81,6 @@ def _forbidden_rpc_response(platform, vip_identity, method_name=None):
     return Response(json.dumps({'error': f'RPC to {target} is not permitted through the web API.'}), 403,
                     content_type='application/json')
 
-
 class OverrideError(Exception):
     """Error raised by driver when the user tries to set/revert point when global override is set."""
     pass
@@ -88,24 +92,53 @@ class LockError(Exception):
     pass
 
 
+def _is_authorization_error(e: Exception) -> bool:
+    """True when a remote call failed because the platform refused the web service itself (an AuthException raised
+    on the peer, e.g. platform.web lacks the capability for config.store.set_config). This is distinct from the web
+    user's own authorization, which @endpoint checks before dispatch."""
+    exc_type = e.exc_info.get('exc_type', '') if isinstance(e, RemoteError) and isinstance(e.exc_info, dict) else ''
+    return exc_type.endswith('AuthException') or 'AuthException(' in str(e)
+
+
+def _forbidden_by_platform_response(e: Exception) -> Response:
+    exc_args = e.exc_info.get('exc_args') if isinstance(e, RemoteError) and isinstance(e.exc_info, dict) else None
+    detail = str(exc_args[0]).strip() if exc_args else str(e)
+    return Response(json.dumps({'error': 'The web service is not authorized by the platform to perform this action. '
+                                         'A platform administrator must grant it the required capability.',
+                                'detail': detail}), 403, content_type='application/json')
+
+
 def endpoint(func):
+    """Authenticate and authorize a VUI request before dispatching to the wrapped handler.
+
+    Handlers take either (env, data) or (env, start_response, data). PlatformWebService.app_routing first calls a
+    callable route with three arguments and falls back to two on TypeError, so the arity check below must raise
+    TypeError before any other work is done.
+    """
+    takes_start_response = 'start_response' in inspect.signature(func).parameters
+    expected_args = 2 if takes_start_response else 1
+
     @functools.wraps(func)
-    def verify_and_dispatch(self, env, data):
-        from volttron.services.web import get_bearer
+    def verify_and_dispatch(self, env, *args):
+        if len(args) != expected_args:
+            raise TypeError(f'{func.__name__}() takes {expected_args + 2} positional arguments but '
+                            f'{len(args) + 2} were given')
         try:
-            claims = self._agent.get_user_claims(get_bearer(env))
+            # A request that changes state must carry the token in the Authorization header: a browser attaches
+            # the login cookie to requests that other sites make, which would let them act as the user.
+            groups = authorized_groups(self._agent, env, header_only=env.get('REQUEST_METHOD') not in ('GET', 'HEAD'))
         except Exception as e:
             _log.warning(f"Unauthorized user attempted to connect to {env.get('PATH_INFO')}. Caught Exception: {e}")
-            return Response(json.dumps({'error': 'Not Authorized'}), 401, content_type='app/json')
+            return Response(json.dumps({'error': 'Not Authorized'}), 401, content_type='application/json')
 
         # Only allow only users with API permissions:
-        if 'vui' not in claims.get('groups'):
-            _log.warning(f"Unauthorized user attempted to connect with 'vui' claim to {env.get('PATH_INFO')}.")
-            return Response(json.dumps({'error': 'Not Authorized'}), 403, content_type='app/json')
+        if 'vui' not in groups:
+            _log.warning(f"Unauthorized user attempted to connect without 'vui' claim to {env.get('PATH_INFO')}.")
+            return Response(json.dumps({'error': 'Not Authorized'}), 403, content_type='application/json')
 
         # Dispatch endpoint:
         try:
-            response = func(self, env, data)
+            response = func(self, env, *args)
             if not response:
                 message = f"Endpoint {env['REQUEST_METHOD']} {env['PATH_INFO']} is not implemented."
                 return Response(json.dumps({"error": message}), status=501, content_type='application/json')
@@ -114,8 +147,125 @@ def endpoint(func):
         except TimeoutError as e:
             return Response(json.dumps({'error': f'Request Timed Out: {e}'}), 504, content_type='application/json')
         except Exception as e:
+            if _is_authorization_error(e):
+                _log.warning(f"Platform refused {env.get('REQUEST_METHOD')} {env.get('PATH_INFO')}: {e}")
+                return _forbidden_by_platform_response(e)
             return Response(json.dumps({'error': f'Unexpected Error: {e}'}), 500, content_type='application/json')
     return verify_and_dispatch
+
+
+def authorized_groups(agent, env, header_only=False) -> list:
+    """Validate the bearer token in env against the web service and return the user's groups.
+
+    With ``header_only`` the token is taken from the Authorization header alone, never from the cookie.
+
+    Raises if there is no token, the token does not validate, or it is not an access token of a live session (a
+    refresh token, or a revoked session). Never returns None, so callers can test group membership directly.
+    """
+    from volttron.services.web import get_authorization_bearer, get_bearer, NotAuthorized
+    bearer = get_authorization_bearer(env) if header_only else get_bearer(env)
+    if not bearer:
+        raise NotAuthorized("No bearer token supplied.")
+    claims = agent.get_user_claims(bearer) or {}
+    if not claims:
+        # A refresh token, or a revoked session: the caller must log in again, not ask for more rights.
+        raise NotAuthorized("Token is not a valid access token.")
+    return list(claims.get('groups') or [])
+
+
+def _same_origin(env) -> bool:
+    """True when the request's Origin names this server.
+
+    A browser sends the login cookie on a websocket opened by any site, so a cookie-authenticated upgrade must
+    come from a page served by this host.
+    """
+    from urllib.parse import urlparse
+    origin, host = env.get('HTTP_ORIGIN'), env.get('HTTP_HOST')
+    if not origin or not host:
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    return parsed.scheme in ('http', 'https') and parsed.netloc.lower() == host.lower()
+
+
+
+# ---- config entry metadata (see docs/source/platforms/agents/config-endpoints.rst) -----------------------------------
+def _etag(config_type, data) -> str:
+    """A strong validator over the stored type and text, so a re-store under another type changes it and entries that
+    predate the store's ``modified`` field still have one."""
+    digest = hashlib.sha256(f'{config_type}\n{data if data is not None else ""}'.encode('utf-8')).hexdigest()
+    return f'"{digest[:32]}"'
+
+
+def _http_date(modified) -> str | None:
+    """The store's ISO 8601 ``modified`` as an HTTP date; None when the entry predates the field."""
+    if not modified:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(modified))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return format_datetime(stamp.astimezone(timezone.utc), usegmt=True)
+
+
+def _metadata_headers(metadata: dict) -> dict:
+    headers = {'ETag': metadata['etag'], 'Config-Type': metadata.get('type') or 'raw'}
+    last_modified = _http_date(metadata.get('modified'))
+    if last_modified:
+        headers['Last-Modified'] = last_modified
+    return headers
+
+
+def _metadata_body(metadata: dict) -> dict:
+    data = metadata.get('data')
+    return {'type': metadata.get('type'), 'modified': metadata.get('modified'), 'etag': metadata['etag'],
+            'size': len(data.encode('utf-8')) if isinstance(data, str) else (len(data) if data is not None else 0)}
+
+
+def _etag_matches(header_value: str, etag: str) -> bool:
+    """RFC 7232 comparison for If-Match / If-None-Match: a list of validators or ``*``; weak prefixes ignored."""
+    for candidate in (c.strip() for c in header_value.split(',')):
+        if candidate == '*':
+            return True
+        if candidate.startswith('W/'):
+            candidate = candidate[2:]
+        if candidate == etag:
+            return True
+    return False
+
+
+def _not_modified(env: dict, metadata: dict) -> bool:
+    """Whether a conditional GET or HEAD may answer 304. If-None-Match wins; If-Modified-Since needs a recorded
+    modification time, so an entry without one is always sent."""
+    if_none_match = env.get('HTTP_IF_NONE_MATCH')
+    if if_none_match is not None:
+        return _etag_matches(if_none_match, metadata['etag'])
+    if_modified_since = env.get('HTTP_IF_MODIFIED_SINCE')
+    if if_modified_since is None or not metadata.get('modified'):
+        return False
+    try:
+        since = parsedate_to_datetime(if_modified_since)
+        modified = datetime.fromisoformat(str(metadata['modified']))
+    except (TypeError, ValueError):
+        return False
+    if modified.tzinfo is None:
+        modified = modified.replace(tzinfo=timezone.utc)
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    return modified.replace(microsecond=0) <= since
+
+
+def _write_flags(query_params: dict) -> dict:
+    """``trigger-callback`` and ``send-update`` query parameters of PUT and POST (default true)."""
+    flags = {}
+    for param, name in (('trigger-callback', 'trigger_callback'), ('send-update', 'send_update')):
+        if param in query_params:
+            flags[name] = str(query_params[param]).lower() in ('true', 't', '1', 'yes')
+    return flags
 
 
 class VUIEndpoints:
@@ -143,7 +293,7 @@ class VUIEndpoints:
                             'endpoint-active': False,
                         },
                         'health': {
-                            'endpoint-active': False,
+                            'endpoint-active': True,
                         },
                         'pubsub': {
                             'endpoint-active': False,
@@ -174,7 +324,7 @@ class VUIEndpoints:
                         'endpoint-active': False,
                     },
                     'health': {
-                        'endpoint-active': False,
+                        'endpoint-active': True,
                     },
                     'historians': {
                         'endpoint-active': True,
@@ -212,6 +362,32 @@ class VUIEndpoints:
         if self.active_routes['vui']['platforms']['pubsub']:
             self.pubsub_manager = VUIPubsubManager(self._agent)
 
+    UNIMPLEMENTED_SPEC_ROUTES = (
+        '^/vui/platforms/[^/]+/agents/[^/]+/frontends/?$',
+        '^/vui/platforms/[^/]+/agents/[^/]+/frontends/[^/]+/?$',
+        '^/vui/platforms/[^/]+/auths/?$',
+        '^/vui/platforms/[^/]+/auths/[^/]+/?$',
+        '^/vui/platforms/[^/]+/auths/[^/]+/publickeys/?$',
+        '^/vui/platforms/[^/]+/configs/?$',
+        '^/vui/platforms/[^/]+/configs/.+/?$',
+        '^/vui/platforms/[^/]+/groups/?$',
+        '^/vui/platforms/[^/]+/groups/[^/]+/?$',
+        '^/vui/platforms/[^/]+/known-hosts/?$',
+        '^/vui/platforms/[^/]+/known-hosts/[^/]+/?$',
+        '^/vui/platforms/[^/]+/roles/?$',
+        '^/vui/platforms/[^/]+/roles/[^/]+/?$',
+        '^/vui/platforms/[^/]+/statistics/?$',
+        '^/vui/devices/?$',
+        '^/vui/devices/hierarchy/?$',
+        '^/vui/devices/hierarchy/.+/?$',
+        '^/vui/devices/.+/?$',
+        '^/vui/historians/?$',
+        '^/vui/historians/[^/]+/?$',
+        '^/vui/historians/[^/]+/topics/?$',
+        '^/vui/historians/[^/]+/topics/.+/?$',
+        '^/vui/keypair/?$',
+    )
+
     def get_routes(self):
         """
         Returns a list of tuples with the routes for the administration endpoints
@@ -229,11 +405,13 @@ class VUIEndpoints:
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/configs/?$'), 'callable', self.handle_platforms_agents_configs),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/configs/.*/?$'), 'callable', self.handle_platforms_agents_configs),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/enabled/?$'), 'callable', self.handle_platforms_agents_enabled),
+            (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/health/?$'), 'callable', self.handle_platforms_agents_health),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/rpc/?$'), 'callable', self.handle_platforms_agents_rpc),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/rpc/[^/]+/?$'), 'callable', self.handle_platforms_agents_rpc_method),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/running/?$'), 'callable', self.handle_platforms_agents_running),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/status/?$'), 'callable', self.handle_platforms_agents_status),
             (re.compile('^/vui/platforms/[^/]+/agents/[^/]+/tag/?$'), 'callable', self.handle_platforms_agents_tag),
+            (re.compile('^/vui/platforms/[^/]+/health/?$'), 'callable', self.handle_platforms_health),
             (re.compile('^/vui/platforms/[^/]+/devices/?$'), 'callable', self.handle_platforms_devices),
             (re.compile('^/vui/platforms/[^/]+/devices/.*/?$'), 'callable', self.handle_platforms_devices),
             (re.compile('^/vui/platforms/[^/]+/historians/?$'), 'callable', self.handle_platforms_historians),
@@ -246,6 +424,10 @@ class VUIEndpoints:
             (re.compile('^/vui/platforms/[^/]+/pubsub/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/pubsub/.*/?$'), 'callable', self.handle_platforms_pubsub),
             (re.compile('^/vui/platforms/[^/]+/status/?$'), 'callable', self.handle_platforms_status),
+            # Paths the API specification (static/specs/vui.specs.yml) lists that this service does not implement
+            # answer a JSON 501 through @endpoint, as the unimplemented methods of implemented routes do, rather
+            # than a plain 404. tests/unit_tests/test_vui_spec_parity.py keeps this list and the specification in step.
+            *[(re.compile(pattern), 'callable', self.handle_not_implemented) for pattern in self.UNIMPLEMENTED_SPEC_ROUTES],
             # (re.compile('^/vui/devices/?$'), 'callable', self.handle_vui_devices),
             # (re.compile('^/vui/devices/.+/?$'), 'callable', self.handle_vui_devices_topic),
             # (re.compile('^/vui/devices/hierarchy/?$'), 'callable', self.handle_vui_devices_hierarchy),
@@ -308,6 +490,14 @@ class VUIEndpoints:
                 return Response(json.dumps(error), 400, content_type='application/json')
             else:
                 agents = self._get_agents(platform, agent_state, include_hidden)
+                tag_glob, regex = query_params.get('tag'), query_params.get('regex')
+                if tag_glob is not None or regex is not None:
+                    records = self._agent_records(platform, include_hidden=True)
+                    try:
+                        agents = [a for a in agents
+                                  if self._agent_matches(records.get(a, {'identity': a}), tag_glob, regex)]
+                    except (re.error, OverflowError, RecursionError) as e:
+                        return Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
                 return Response(json.dumps(self._links(path_info, agents)), 200,
                                 content_type='application/json')
 
@@ -324,6 +514,8 @@ class VUIEndpoints:
         query_params = _parse_query_params(env['QUERY_STRING'])
         restart = self._to_bool(query_params.get('restart', 'false'))
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/running/?$', path_info).groups()
+        if vip_identity == self.WILDCARD_IDENTITY:
+            return self._running_for_selection(platform, query_params, request_method, restart)
         uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
         if not uuid:
             return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}), 400,
@@ -364,6 +556,17 @@ class VUIEndpoints:
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/?$', path_info).groups()
         if request_method == 'GET':
             active_routes = self._find_active_sub_routes(['vui', 'platforms', 'agents'], path_info=path_info)
+            if vip_identity == self.WILDCARD_IDENTITY:
+                # The wildcard addresses a selection of agents; only the routes that act on a selection apply.
+                # A regex given here is not applied, but an invalid one is refused as it is on the selection routes.
+                regex = _parse_query_params(env.get('QUERY_STRING', '')).get('regex')
+                if regex is not None:
+                    try:
+                        re.compile(regex)
+                    except (re.error, OverflowError, RecursionError) as e:
+                        return Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
+                active_routes['links'] = {k: v for k, v in active_routes['links'].items() if k in self.SELECTION_ROUTES}
+                return Response(json.dumps(active_routes), 200, content_type='application/json')
             agent_state = self._get_agent_state(platform, vip_identity)
             # If agent is not installed, only allow configs endpoint.
             if agent_state == 'not_installed' and 'configs' in active_routes['links'].keys():
@@ -373,63 +576,137 @@ class VUIEndpoints:
                 active_routes['links'].pop('rpc')
             return Response(json.dumps(active_routes), 200, content_type='application/json')
 
+    CONFIG_RESPONSE_TYPES = ('application/json', 'text/csv', 'text/plain')
+
+    @staticmethod
+    def _negotiate_config_response_type(accept_header: str | None) -> str | None:
+        """Choose the media type for a configuration GET from the request's Accept header.
+
+        application/json (parsed contents) is returned when the header is absent, allows any type, or lists
+        application/json. Otherwise text/csv or text/plain is chosen when listed. Returns None when nothing offered
+        is acceptable. Quality values are ignored.
+        """
+        if not accept_header or not accept_header.strip():
+            return 'application/json'
+        offered = {part.split(';')[0].strip().lower() for part in accept_header.split(',')}
+        if offered & {'application/json', '*/*', 'application/*'}:
+            return 'application/json'
+        for media_type in ('text/csv', 'text/plain'):
+            if media_type in offered:
+                return media_type
+        if 'text/*' in offered:
+            return 'text/plain'
+        return None
+
     @endpoint
     def handle_platforms_agents_configs(self, env: dict, data: dict) -> Response | None:
         """
-                Endpoints for /vui/platforms/:platform/agents/:vip_identity/configs/:file_name
-                :param env:
-                :param data:
-                :return:
-                """
+        Endpoints for /vui/platforms/:platform/agents/:vip_identity/configs/:file_name
+
+        GET (and HEAD) of one entry carry ETag, Last-Modified (when the store recorded a modification time) and
+        Config-Type headers, answer If-None-Match / If-Modified-Since with 304, and return the entry's metadata
+        instead of its contents when ``metadata=true`` is given. GET of the listing adds a ``configs`` map of
+        metadata per entry with ``metadata=true``. PUT and POST take ``trigger-callback`` and ``send-update``
+        (default true, forwarded to the store); PUT honours If-Match with 412 on a mismatch.
+        :param env:
+        :param data:
+        :return:
+        """
         _log.debug('VUI: In handle_platforms_agents_configs_config')
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         config_type = env.get('CONTENT_TYPE')
-
+        query_params = _parse_query_params(env.get('QUERY_STRING', ''))
+        with_metadata = self._to_bool(query_params.get('metadata', False))
         no_config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/?$', path_info)
         if no_config_name:
             platform, vip_identity, config_name = tuple(no_config_name.groups()) + ('',)
-            query_params = _parse_query_params(env['QUERY_STRING'])
             config_name = query_params.get('config-name')
         else:
             platform, vip_identity, config_name = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/configs/(.*)/?$',
                                                            path_info).groups()
             config_name = config_name[:-1] if config_name[-1] == '/' else config_name
-        if request_method == 'GET':
+        if request_method in ('GET', 'HEAD'):
+            # werkzeug returns an empty body for HEAD and keeps the status and headers, so HEAD is GET here.
             try:
                 if no_config_name:
                     if vip_identity != '-':
-                        setting_list = self._rpc(CONFIGURATION_STORE, 'manage_list_configs', vip_identity,
+                        setting_list = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
                                                  external_platform=platform)
                         route_dict = self._links(path_info, setting_list)
+                        if with_metadata:
+                            route_dict['configs'] = {
+                                name: {**_metadata_body(self._config_metadata(platform, vip_identity, name)),
+                                       'link': route_dict['links'][name]}
+                                for name in setting_list}
                         return Response(json.dumps(route_dict), 200, content_type='application/json')
                     else:
-                        list_of_agents = self._rpc(CONFIGURATION_STORE, 'manage_list_stores', external_platform=platform)
+                        list_of_agents = self._rpc(CONFIGURATION_STORE, 'list_stores', external_platform=platform)
+                        if with_metadata:
+                            counts = {identity: {'configs': len(self._rpc(CONFIGURATION_STORE, 'list_configs', identity,
+                                                                           external_platform=platform))}
+                                      for identity in list_of_agents}
+                            return Response(json.dumps(counts), 200, content_type='application/json')
                         return Response(json.dumps(list_of_agents), 200, content_type='application/json')
                 elif not no_config_name:
-                    setting_dict = self._rpc(CONFIGURATION_STORE, 'manage_get', vip_identity, config_name,
-                                             external_platform=platform)
-                    return Response(json.dumps(setting_dict), 200, content_type='application/json')
+                    metadata = self._config_metadata(platform, vip_identity, config_name)
+                    headers = _metadata_headers(metadata)
+                    if _not_modified(env, metadata):
+                        return Response(None, 304, headers=headers)
+                    if with_metadata:
+                        return Response(json.dumps(_metadata_body(metadata)), 200, headers=headers,
+                                        content_type='application/json')
+                    # Content negotiation (see docs): JSON (parsed contents) unless the Accept header restricts the
+                    # response to text/csv (CSV configs only) or text/plain (the stored file text).
+                    response_type = self._negotiate_config_response_type(env.get('HTTP_ACCEPT'))
+                    if response_type is None:
+                        return Response(json.dumps({"Error": "Configurations are available as "
+                                                             f"{', '.join(self.CONFIG_RESPONSE_TYPES)}."}),
+                                        406, content_type='application/json')
+                    if response_type == 'application/json':
+                        parsed = self._rpc(CONFIGURATION_STORE, 'get_config', vip_identity, config_name, raw=False,
+                                           external_platform=platform)
+                        return Response(json.dumps(parsed), 200, headers=headers, content_type='application/json')
+                    stored_type = metadata.get('type')
+                    if response_type == 'text/csv' and stored_type != 'csv':
+                        return Response(json.dumps({"Error": f'Configuration "{config_name}" is stored as '
+                                                             f'{stored_type}, not csv.'}),
+                                        406, content_type='application/json')
+                    return Response(metadata['data'], 200, headers=headers, content_type=response_type)
             except RemoteError as e:
+                if _is_authorization_error(e):
+                    return _forbidden_by_platform_response(e)
                 return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
-
         elif request_method == 'PUT' and (not no_config_name):
             if config_type in ['application/json', 'text/csv', 'text/plain']:
-                self._insert_config(config_type, data, vip_identity, config_name, platform)
+                if_match = env.get('HTTP_IF_MATCH')
+                if if_match is not None:
+                    try:
+                        current = self._config_metadata(platform, vip_identity, config_name)
+                    except RemoteError as e:
+                        if _is_authorization_error(e):
+                            return _forbidden_by_platform_response(e)
+                        current = None
+                    if current is None or not _etag_matches(if_match, current['etag']):
+                        return Response(json.dumps({'error': 'If-Match does not match the stored configuration.',
+                                                    'etag': current['etag'] if current else None}),
+                                        412, content_type='application/json')
+                self._insert_config(config_type, data, vip_identity, config_name, platform,
+                                    **_write_flags(query_params))
                 return Response(None, 204, content_type='application/json')
             else:
                 return Response(
                     json.dumps({"Error": "The configuration type can only be 'JSON', 'CSV' and 'RAW.'"}), 400,
                     content_type='application/json')
-
         elif request_method == 'POST' and no_config_name:
             if config_type in ['application/json', 'text/csv', 'text/plain']:
-                setting_list = self._rpc(CONFIGURATION_STORE, 'manage_list_configs', vip_identity,
+                setting_list = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
                                          external_platform=platform)
                 if config_name in setting_list:
                     e = {'Error': f'Configuration: "{config_name}" already exists for agent: "{vip_identity}"'}
                     return Response(json.dumps(e), 409, content_type='application/json')
-                self._insert_config(config_type, data, vip_identity, config_name, platform)
+                self._insert_config(config_type, data, vip_identity, config_name, platform,
+                                    **_write_flags(query_params))
                 response = Response(None, 201, content_type='application/json')
                 response.location = f'/platforms/{platform}/agents/{vip_identity}/configs/{config_name}'
                 return response
@@ -437,21 +714,41 @@ class VUIEndpoints:
                 return Response(
                     json.dumps({"Error": "The configuration type can only be 'JSON', 'CSV' and 'RAW.'"}), 400,
                     content_type='application/json')
-
         elif request_method == 'DELETE':
             if no_config_name:
                 try:
-                    self._rpc(CONFIGURATION_STORE, 'manage_delete_store', vip_identity, external_platform=platform)
+                    # Removing a store that still holds configurations is a conflict unless all=true is given.
+                    if not self._to_bool(query_params.get('all', False)):
+                        remaining = self._rpc(CONFIGURATION_STORE, 'list_configs', vip_identity,
+                                              external_platform=platform)
+                        if remaining:
+                            return Response(json.dumps({'error': f'The configuration store for "{vip_identity}" still '
+                                                                 f'holds {len(remaining)} configuration(s). Pass '
+                                                                 f'all=true to delete them with the store.',
+                                                        'configs': sorted(remaining)}),
+                                            409, content_type='application/json')
+                    self._rpc(CONFIGURATION_STORE, 'delete_store', vip_identity, external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
+                    if _is_authorization_error(e):
+                        return _forbidden_by_platform_response(e)
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
             else:
                 try:
-                    self._rpc(CONFIGURATION_STORE, 'manage_delete_config', vip_identity, config_name,
+                    self._rpc(CONFIGURATION_STORE, 'delete_config', vip_identity, config_name,
                               external_platform=platform)
                     return Response(None, 204, content_type='application/json')
                 except RemoteError as e:
+                    if _is_authorization_error(e):
+                        return _forbidden_by_platform_response(e)
                     return Response(json.dumps({"Error": f"{e}"}), 400, content_type='application/json')
+
+    def _config_metadata(self, platform: str, vip_identity: str, config_name: str) -> dict:
+        """The store's metadata of one entry (type, modified, data) with the validator derived from it."""
+        metadata = dict(self._rpc(CONFIGURATION_STORE, 'get_metadata', vip_identity, config_name,
+                                  external_platform=platform))
+        metadata['etag'] = _etag(metadata.get('type'), metadata.get('data'))
+        return metadata
 
     @endpoint
     def handle_platforms_agents_enabled(self, env: dict, data: dict) -> Response | None:
@@ -466,6 +763,8 @@ class VUIEndpoints:
         query_params = _parse_query_params(env['QUERY_STRING'])
         priority = query_params.get('priority', '50')
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/enabled/?$', path_info).groups()
+        if vip_identity == self.WILDCARD_IDENTITY:
+            return self._enabled_for_selection(platform, query_params, request_method, priority)
 
         if request_method == 'GET':
             try:
@@ -478,7 +777,7 @@ class VUIEndpoints:
             except StopIteration:
                 return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}),
                                 400, content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
 
@@ -490,7 +789,7 @@ class VUIEndpoints:
                 uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
                 self._rpc(CONTROL, 'prioritize_agent', uuid, priority, external_platform=platform)
                 return Response(status=204)
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
 
@@ -499,7 +798,7 @@ class VUIEndpoints:
                 uuid = self._rpc(CONTROL, 'identity_exists', vip_identity, external_platform=platform)
                 self._rpc(CONTROL, 'prioritize_agent', uuid, None, external_platform=platform)
                 return Response(status=204)
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
 
@@ -557,7 +856,7 @@ class VUIEndpoints:
                     result = self._rpc(vip_identity, method_name, *data, external_platform=platform)
                 else:
                     raise ValueError(f'Malformed message body: {data}')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'for agent {vip_identity}: {e}'}),
                                 400, content_type='application/json')
             return Response(json.dumps(result), 200, content_type='application/json')
@@ -573,6 +872,13 @@ class VUIEndpoints:
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
         platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/status/?$', path_info).groups()
+        if request_method == 'GET' and vip_identity == self.WILDCARD_IDENTITY:
+            selected, error = self._select_agents(platform, _parse_query_params(env['QUERY_STRING']))
+            if error:
+                return error
+            status_dict = self._get_status(platform)
+            return Response(json.dumps({i: status_dict[i] for i in selected if i in status_dict}), 200,
+                            content_type='application/json')
 
         if request_method == 'GET':
             try:
@@ -583,9 +889,169 @@ class VUIEndpoints:
             except KeyError:
                 return Response(json.dumps({'error': f'Agent "{vip_identity}" not found.'}),
                                 400, content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent  {e}'}),
                                 400, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_agents_health(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/agents/:vip_identity/health/
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        platform, vip_identity = re.match('^/vui/platforms/([^/]+)/agents/([^/]+)/health/?$', path_info).groups()
+        if request_method == 'GET':
+            if vip_identity == self.WILDCARD_IDENTITY:
+                selected, error = self._select_agents(platform, _parse_query_params(env['QUERY_STRING']))
+                if error:
+                    return error
+                health = self._rpc(PLATFORM_HEALTH, 'get_platform_health', external_platform=platform) or {}
+                return Response(json.dumps({i: health[i] for i in selected if i in health}), 200,
+                                content_type='application/json')
+            health = self._rpc(PLATFORM_HEALTH, 'get_platform_health', external_platform=platform) or {}
+            if vip_identity not in health:
+                return Response(json.dumps({'error': f'No health information for agent "{vip_identity}".'}), 400,
+                                content_type='application/json')
+            return Response(json.dumps(health[vip_identity]), 200, content_type='application/json')
+
+    @endpoint
+    def handle_platforms_health(self, env: dict, data: dict) -> Response | None:
+        """
+        Endpoints for /vui/platforms/:platform/health/
+        :param env:
+        :param data:
+        :return:
+        """
+        path_info = env.get('PATH_INFO')
+        request_method = env.get("REQUEST_METHOD")
+        platform = re.match('^/vui/platforms/([^/]+)/health/?$', path_info).groups()[0]
+        if request_method == 'GET':
+            if platform not in self._get_platforms():
+                return Response(json.dumps({'error': f'Unknown platform: {platform}'}), 400,
+                                content_type='application/json')
+            health = self._rpc(PLATFORM_HEALTH, 'get_platform_health', external_platform=platform) or {}
+            return Response(json.dumps(health), 200, content_type='application/json')
+
+    # ------------------------------------------------------------------ selecting several agents at once
+    # The :vip_identity segment of the running, enabled, status and health routes may be '-' to address a selection
+    # of agents chosen by query parameters, as the devices routes use '-' for a topic segment:
+    #   tag=<glob>          fnmatch against the agent's tag; 'tag=*' is every agent that has a tag.
+    #   regex=<pattern>     re.search against the VIP identity.
+    #   include-hidden=true also consider platform services (running peers that are not installed agents).
+    # At least one of tag or regex is required, so that a request with no filter is an error rather than "everything".
+    # Parameters combine by intersection. Responses are keyed by identity; writes act on each agent independently
+    # and report a per-agent error rather than aborting the batch.
+    WILDCARD_IDENTITY = '-'
+    SELECTION_ROUTES = ('running', 'enabled', 'status', 'health')
+
+    def _agent_records(self, platform: str, include_hidden: bool = False) -> dict:
+        """Installed agents by identity (list_agents records plus 'running'); hidden peers added when asked."""
+        records = {a['identity']: dict(a) for a in self._rpc(CONTROL, 'list_agents', external_platform=platform)}
+        peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
+        for identity, record in records.items():
+            record['running'] = identity in peerlist
+        if include_hidden:
+            for peer in peerlist:
+                if peer not in records:
+                    records[peer] = {'identity': peer, 'uuid': None, 'name': None, 'tag': None, 'priority': None,
+                                     'running': True}
+        return records
+
+    @staticmethod
+    def _agent_matches(record: dict, tag_glob: str | None, regex: str | None) -> bool:
+        if tag_glob is not None:
+            tag = record.get('tag')
+            if not tag or not fnmatch.fnmatchcase(str(tag), tag_glob):
+                return False
+        if regex is not None and not re.search(regex, record['identity']):
+            return False
+        return True
+
+    def _select_agents(self, platform: str, query_params: dict) -> tuple[dict, Response | None]:
+        """Agents addressed by the wildcard identity: ({identity: record}, None) or ({}, error response)."""
+        if platform not in self._get_platforms():
+            return {}, Response(json.dumps({'error': f'Unknown platform: {platform}'}), 400,
+                                content_type='application/json')
+        include_hidden = self._to_bool(query_params.get('include-hidden', False))
+        tag_glob, regex = query_params.get('tag'), query_params.get('regex')
+        if tag_glob is None and regex is None:
+            # Selecting everything must be said explicitly, so a forgotten filter cannot act on more than intended.
+            return {}, Response(json.dumps({'error': f"The wildcard identity '{self.WILDCARD_IDENTITY}' requires a tag "
+                                                     "or regex query parameter. Use tag=* for every tagged agent or "
+                                                     "regex=. for every installed agent."}),
+                                400, content_type='application/json')
+        records = self._agent_records(platform, include_hidden)
+        try:
+            return {i: r for i, r in records.items() if self._agent_matches(r, tag_glob, regex)}, None
+        except (re.error, OverflowError, RecursionError) as e:
+            return {}, Response(json.dumps({'error': f'Invalid regex: {e}'}), 400, content_type='application/json')
+
+    def _running_for_selection(self, platform: str, query_params: dict, request_method: str, restart: bool
+                               ) -> Response | None:
+        selected, error = self._select_agents(platform, query_params)
+        if error:
+            return error
+        if request_method == 'GET':
+            return Response(json.dumps({i: {'running': r['running']} for i, r in selected.items()}), 200,
+                            content_type='application/json')
+        if request_method not in ('PUT', 'DELETE'):
+            return None
+        results = {}
+        for identity, record in selected.items():
+            err = None
+            try:
+                if record.get('uuid') is None:
+                    raise ValueError('not an installed agent')
+                if request_method == 'DELETE':
+                    if record['running']:
+                        self._rpc(CONTROL, 'stop_agent', record['uuid'], external_platform=platform)
+                elif restart:
+                    self._rpc(CONTROL, 'restart_agent', record['uuid'], external_platform=platform)
+                elif not record['running']:   # PUT without restart ensures the agent is running
+                    self._rpc(CONTROL, 'start_agent', record['uuid'], external_platform=platform)
+            except Exception as e:
+                err = str(e)
+            results[identity] = err
+        peerlist = self._rpc(CONTROL, 'peerlist', external_platform=platform)
+        return Response(json.dumps({i: {'running': i in peerlist, 'error': err} for i, err in results.items()}), 200,
+                        content_type='application/json')
+
+    def _enabled_for_selection(self, platform: str, query_params: dict, request_method: str, priority: str
+                               ) -> Response | None:
+        selected, error = self._select_agents(platform, query_params)
+        if error:
+            return error
+
+        def _enabled(record):
+            p = record.get('priority')
+            p = int(p) if p not in (None, '') else None
+            return {'status': p is not None, 'priority': p}
+
+        if request_method == 'GET':
+            return Response(json.dumps({i: _enabled(r) for i, r in selected.items()}), 200,
+                            content_type='application/json')
+        if request_method not in ('PUT', 'DELETE'):
+            return None
+        if request_method == 'PUT' and (not priority.isdigit() or not 0 <= int(priority) < 100):
+            error = {'error': f'Priority must be an integer from 0 - 99. Received: {priority}.'}
+            return Response(json.dumps(error), 400, content_type='application/json')
+        new_priority = priority if request_method == 'PUT' else None
+        results = {}
+        for identity, record in selected.items():
+            err = None
+            try:
+                if record.get('uuid') is None:
+                    raise ValueError('not an installed agent')
+                self._rpc(CONTROL, 'prioritize_agent', record['uuid'], new_priority, external_platform=platform)
+                record['priority'] = new_priority
+            except Exception as e:
+                err = str(e)
+            results[identity] = {**_enabled(record), 'error': err}
+        return Response(json.dumps(results), 200, content_type='application/json')
 
     @endpoint
     def handle_platforms_agents_tag(self, env: dict, data: dict) -> Response | None:
@@ -606,7 +1072,7 @@ class VUIEndpoints:
             except StopIteration:
                 return Response(json.dumps({'error': f"Agent '{vip_identity}' not found."}),
                                 400, content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f"For agent '{vip_identity}': {e}"}),
                                 400, content_type='application/json')
 
@@ -697,6 +1163,17 @@ class VUIEndpoints:
         except Timeout as e:
             return Response(json.dumps({'error': f'RPC Timed Out: {e}'}), 504, content_type='application/json')
 
+        # The Platform Driver's get/set/revert RPCs take a list of point identifiers (the full equipment topic, e.g.
+        # devices/campus/building/device/point) and key their results by the same identifiers. The web API keys its
+        # responses by the topic without the root segment, so map identifiers back to topics here.
+        def _driver_rpc(method, **kwargs):
+            return self._rpc(self._agent.driver_vip_identity, method, external_platform=platform, **kwargs)
+
+        def _read_values(point_nodes):
+            values, errors = _driver_rpc('get', topic=[p.identifier for p in point_nodes])
+            return ({p.topic: values[p.identifier] for p in point_nodes if p.identifier in values},
+                    {p.topic: errors[p.identifier] for p in point_nodes if p.identifier in errors})
+
         if request_method == 'GET':
             # Query parameters:
             read_all = self._to_bool(query_params.get('read-all', False))
@@ -710,11 +1187,10 @@ class VUIEndpoints:
                     # Either leaf values are explicitly requested, or all nodes are already points -- Return points:
                     ret_dict = defaultdict(dict)
                     if return_values:
-                        ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
-                                               [d.topic for d in points], external_platform=platform)
-                        for k, v in ret_values[0].items():
+                        values, value_errors = _read_values(points)
+                        for k, v in values.items():
                             ret_dict[k]['value'] = v
-                        for k, e in ret_values[1].items():
+                        for k, e in value_errors.items():
                             ret_dict[k]['value_error'] = e
                     for point in points:
                         if return_routes:
@@ -745,21 +1221,18 @@ class VUIEndpoints:
             # Set selected points:
             try:
                 set_value = data.get('value')
-                topics_values = [(d.topic, set_value) for d in points if d.topic not in unwritables]
-                ret_errors = self._rpc(self._agent.driver_vip_identity, 'set_multiple_points',
-                                       requester_id=self._agent.core.identity, topics_values=topics_values,
-                                       external_platform=platform)
+                writable_points = [p for p in points if p.topic not in unwritables]
+                _, set_errors = _driver_rpc('set', value=set_value, topic=[p.identifier for p in writable_points])
                 ret_dict = defaultdict(dict)
-                for k in selected_routes.keys():
-                    ret_dict[k]['route'] = selected_routes[k]
-                    ret_dict[k]['set_error'] = ret_errors.get(k)
-                    ret_dict[k]['writable'] = True if k not in unwritables else False
+                for p in points:
+                    ret_dict[p.topic]['route'] = selected_routes[p.topic]
+                    ret_dict[p.topic]['set_error'] = set_errors.get(p.identifier)
+                    ret_dict[p.topic]['writable'] = p.topic not in unwritables
                 if confirm_values:
-                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
-                                           [d.topic for d in points], external_platform=platform)
+                    values, value_errors = _read_values(points)
                     for k in selected_routes.keys():
-                        ret_dict[k]['value'] = ret_values[0].get(k)
-                        ret_dict[k]['value_check_error'] = ret_values[1].get(k)
+                        ret_dict[k]['value'] = values.get(k)
+                        ret_dict[k]['value_check_error'] = value_errors.get(k)
 
                 return Response(json.dumps(ret_dict), 200, content_type='application/json')
 
@@ -774,27 +1247,22 @@ class VUIEndpoints:
             except ValueError as e:
                 return Response(str(e), status=405, content_type='application/json')
 
-            # Reset selected points:
+            # Revert selected points:
             try:
-                for t_node in topic_nodes:
-                    if t_node.is_device():
-                        self._rpc(self._agent.driver_vip_identity, 'revert_device', requester_id=self._agent.core.identity,
-                                  topic=t_node.topic, external_platform=platform)
-                    elif t_node.is_point() and t_node.topic not in unwritables:
-                        self._rpc(self._agent.driver_vip_identity, 'revert_point', requester_id=self._agent.core.identity,
-                                  topic=t_node.topic, external_platform=platform)
+                writable_points = [p for p in points if p.topic not in unwritables]
+                revert_errors = _driver_rpc('revert', topic=[p.identifier for p in writable_points])
 
                 ret_dict = defaultdict(dict)
-                for k in selected_routes.keys():
-                    ret_dict[k]['route'] = selected_routes[k]
-                    ret_dict[k]['writable'] = True if k not in unwritables else False
+                for p in points:
+                    ret_dict[p.topic]['route'] = selected_routes[p.topic]
+                    ret_dict[p.topic]['revert_error'] = revert_errors.get(p.identifier)
+                    ret_dict[p.topic]['writable'] = p.topic not in unwritables
 
                 if confirm_values:
-                    ret_values = self._rpc(self._agent.driver_vip_identity, 'get_multiple_points',
-                                           [d.topic for d in points], external_platform=platform)
+                    values, value_errors = _read_values(points)
                     for k in selected_routes.keys():
-                        ret_dict[k]['value'] = ret_values[0].get(k)
-                        ret_dict[k]['value_check_error'] = ret_values[1].get(k)
+                        ret_dict[k]['value'] = values.get(k)
+                        ret_dict[k]['value_check_error'] = value_errors.get(k)
                 return Response(json.dumps(ret_dict), 200, content_type='application/json')
 
             except (LockError, OverrideError) as e:
@@ -806,14 +1274,13 @@ class VUIEndpoints:
             return Response(f'Endpoint {request_method} {path_info} is not implemented.',
                             status=501, content_type='text/plain')
 
+    @endpoint
     def handle_platforms_pubsub(self, env: dict, start_response, data: dict):
-        from volttron.services.web import get_bearer  # TODO: Is this necessary, with bearer imported in decorator?
+        from volttron.services.web import get_authorization_bearer, get_bearer
         path_info = env.get('PATH_INFO')
         request_method = env.get("REQUEST_METHOD")
-        query_params = _parse_query_params(env['QUERY_STRING'])
-        _log.debug('VUI.handle_platforms_pubsub -- env is: ')
-        _log.debug({k: str(v) for k, v in env.items()})
-        _log.debug(f'HTTP_AUTHORIZATION is: {env["HTTP_AUTHORIZATION"]}')
+        # The access token has already been validated by @endpoint; it is used here only as the key that groups
+        # a user's websockets. It must never be logged.
         access_token = get_bearer(env)
 
         no_topic = re.match('^/vui/platforms/([^/]+)/pubsub/?$', path_info)
@@ -830,10 +1297,14 @@ class VUIEndpoints:
                 response = Response(json.dumps(ret_dict), 200, content_type='application/json')
                 return response
             else:
+                # The browser WebSocket API cannot set an Authorization header, so a page must open the socket with
+                # the cookie; that is only safe when the page came from this server.
+                if get_authorization_bearer(env) is None and not _same_origin(env):
+                    _log.warning(f"Refused a cookie-authenticated pubsub subscription from origin "
+                                 f"{env.get('HTTP_ORIGIN')!r} for host {env.get('HTTP_HOST')!r}")
+                    return Response(json.dumps({'error': 'Forbidden'}), 403, content_type='application/json')
                 ws = self.pubsub_manager.open_subscription_socket(access_token, topic)
                 env['ws4py.app'] = self.pubsub_manager
-                _log.debug('ENV is:')
-                _log.debug(env)
                 return [ws(env, start_response)]
 
         elif request_method == 'PUT':
@@ -847,6 +1318,11 @@ class VUIEndpoints:
         #     # DELETE -- For ../pubsub and /pubsub/:topic, Close open web sockets and subscriptions for this user.
         #     self.pubsub_manager.close_socket(access_token, topic)
         #     return Response(status=204)
+
+    @endpoint
+    def handle_not_implemented(self, env: dict, data: dict) -> Response | None:
+        """A path the API specification lists but this service does not implement. @endpoint answers 501."""
+        return None
 
     @endpoint
     def handle_platforms_historians(self, env: dict, data: dict) -> Response | None:
@@ -1080,7 +1556,7 @@ class VUIEndpoints:
                 status_dict = self._get_status(platform)
                 return Response(json.dumps(status_dict), 200,
                                 content_type='application/json')
-            except MethodNotFound or ValueError as e:
+            except (MethodNotFound, ValueError) as e:
                 return Response(json.dumps({f'error': f'For agent  {e}'}),
                                 400, content_type='application/json')
         if request_method == 'DELETE':
@@ -1158,13 +1634,17 @@ class VUIEndpoints:
             ret_dict[agent_identity] = la
         return ret_dict
 
-    def _insert_config(self, config_type, data, vip_identity, config_name, platform):
+    def _insert_config(self, config_type, data, vip_identity, config_name, platform, trigger_callback: bool = True,
+                       send_update: bool = True):
         config_type = re.search(r'([^\/]+$)', config_type).group() if config_type in ['application/json',
                                                                                       'text/csv'] else 'raw'
         if config_type == 'json':
             data = json.dumps(data)
-        self._rpc(CONFIGURATION_STORE, 'manage_store', vip_identity, config_name, data, config_type,
-                  external_platform=platform)
+        # The store's defaults are both True; they are passed only when a client turns one off, so the RPC call keeps
+        # its shape for every existing client.
+        flags = {k: v for k, v in (('trigger_callback', trigger_callback), ('send_update', send_update)) if v is False}
+        self._rpc(CONFIGURATION_STORE, 'set_config', vip_identity, config_name, data, config_type,
+                  external_platform=platform, **flags)
         return None
 
     def _rpc(self, vip_identity, method, *args, external_platform=None, **kwargs):

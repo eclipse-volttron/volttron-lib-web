@@ -56,8 +56,6 @@ class PlatformWrapperWithWeb(PlatformWrapper):
     def allow_all_connections(self):
         super(PlatformWrapperWithWeb, self).allow_all_connections()
         with with_os_environ(self.env):
-            if self.messagebus == 'rmq' and self.bind_web_address is not None:
-                self.enable_auto_csr()
             if self.bind_web_address is not None:
                 self.web_admin_api.create_web_admin('admin', 'admin', self.messagebus)
 
@@ -77,23 +75,6 @@ class PlatformWrapperWithWeb(PlatformWrapper):
     def add_vcp(self):
         with with_os_environ(self.env):
             return add_volttron_central_platform(self)
-
-    def is_auto_csr_enabled(self):
-        assert self.messagebus == 'rmq', 'Only available for rmq messagebus'
-        assert self.bind_web_address, 'Must have a web based instance'
-        return self.dynamic_agent.vip.rpc(PLATFORM_WEB, 'is_auto_allow_csr').get()
-
-    def enable_auto_csr(self):
-        assert self.messagebus == 'rmq', 'Only available for rmq messagebus'
-        assert self.bind_web_address, 'Must have a web based instance'
-        self.dynamic_agent.vip.rpc(PLATFORM_WEB, 'auto_allow_csr', True).get()
-        assert self.is_auto_csr_enabled()
-
-    def disable_auto_csr(self):
-        assert self.messagebus == 'rmq', 'Only available for rmq messagebus'
-        assert self.bind_web_address, 'Must have a web based instance'
-        self.dynamic_agent.vip.rpc(PLATFORM_WEB, 'auto_allow_csr', False).get()
-        assert not self.is_auto_csr_enabled()
 
     def startup_platform(self, vip_address, auth_dict=None,
                          mode=UNRESTRICTED, bind_web_address=None,

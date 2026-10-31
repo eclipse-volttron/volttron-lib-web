@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import gevent
+import html
 import gevent.pywsgi
 import logging
 import mimetypes
@@ -46,23 +47,21 @@ from .admin_endpoints import AdminEndpoints
 from .vui_endpoints import VUIEndpoints
 from .rpc_proxy_policy import RpcProxyPolicy
 from .authenticate_endpoint import AuthenticateEndpoints
-from .csr_endpoints import CSREndpoints
+from .token_revocation import RevokedSessions, REVOKED_SESSIONS_FILE
 from .webapp import WebApplicationWrapper
 
 
+from volttron.client.messaging.health import STATUS_BAD
 from volttron.utils.certs import Certs, CertWrapper
 from volttron.utils.context import ClientContext
 from volttron.utils.jsonrpc import  UNAUTHORIZED
 
-from volttron.client.known_identities import PLATFORM_WEB
+from volttron.client.known_identities import PLATFORM_DRIVER, PLATFORM_WEB
 from volttron.client.vip.agent import Agent, Core, RPC
 from volttron.server.decorators import service
 from volttron.server.server_options import ServerOptions
 from volttron.utils import jsonapi
 from volttron.utils import set_agent_identity
-
-# must be after importing of utils which imports grequest.
-import requests
 
 _log = logging.getLogger(__name__)
 
@@ -170,6 +169,9 @@ tplenv = Environment(
     autoescape=select_autoescape(['html', 'xml'])
 )
 
+MIN_SECRET_KEY_BYTES = 32
+
+
 class WebServiceConfig(BaseModel):
     model_config = ConfigDict(extra='allow', populate_by_name=True, validate_assignment=True,
                               arbitrary_types_allowed=True)
@@ -178,6 +180,8 @@ class WebServiceConfig(BaseModel):
     secret_key: SecretStr | None = Field(default=None, alias='web_secret_key')
     ssl_key: str | None = Field(default=None, alias='web_ssl_key')
     ssl_cert: str | None = Field(default=None, alias='web_ssl_cert')
+    # VIP identity of the driver agent the VUI device endpoints read and write points through.
+    driver_vip_identity: str = Field(default=PLATFORM_DRIVER)
     # Which RPC calls the VUI /rpc proxy may forward. Configured as the multi-line "rpc-allow-list" option of the
     # [web] section; see rpc_proxy_policy.py for the syntax. Empty by default, which closes the proxy.
     rpc_allow_list: RpcProxyPolicy = Field(default_factory=RpcProxyPolicy)
@@ -225,6 +229,12 @@ class WebServiceConfig(BaseModel):
         if self.bind_address.scheme == 'http' and self.secret_key is None:
             # TODO: Can we create a secret key for this session? Does that make sense?
             raise ValueError('Parameter "secret_key" is required when using the web service with an HTTP bind_address.')
+        if self.secret_key is not None and len(self.secret_key.get_secret_value().encode('utf-8')) < MIN_SECRET_KEY_BYTES:
+            # HS256 tokens are only as strong as the shared secret. RFC 7518 requires at least the hash output size.
+            raise ValueError(f'Parameter "web_secret_key" must be at least {MIN_SECRET_KEY_BYTES} bytes long.')
+        # The proxy must never reach the driver, whatever identity it runs under. Mutating the policy object (rather
+        # than assigning the field) avoids re-triggering validation under validate_assignment.
+        self.rpc_allow_list.denied_peers = self.rpc_allow_list.denied_peers | {self.driver_vip_identity}
         # TODO: We might want to handle cert loading here so we can validate if it is possible to get them?
         return self
 
@@ -260,11 +270,16 @@ class PlatformWebService(Agent):
 
         self._certs = Certs()
 
-        self._csr_endpoints: CSREndpoints | None = None
         self.appContainer: WebApplicationWrapper | None = None
+        self._server: WSGIServer | None = None
         self._server_greenlet: Greenlet | None = None
         self._admin_endpoints: AdminEndpoints | None = None
         self._vui_endpoints: VUIEndpoints | None = None
+        self._authenticate_endpoints: AuthenticateEndpoints | None = None
+        # Login sessions revoked through DELETE /authenticate. Shared with the authenticate endpoint and
+        # consulted on every token check, so a revoked token is refused everywhere at once.
+        self._revoked_sessions = RevokedSessions(os.path.join(str(self.config.volttron_home),
+                                                              REVOKED_SESSIONS_FILE))
 
     @property
     def ssl_cert(self) -> str | None:
@@ -281,30 +296,18 @@ class PlatformWebService(Agent):
         return self.config.ssl_key
 
     @property
+    def driver_vip_identity(self) -> str:
+        """
+        VIP identity of the driver agent used by the VUI device endpoints.
+        """
+        return self.config.driver_vip_identity
+
+    @property
     def rpc_proxy_policy(self) -> RpcProxyPolicy:
         """
         Policy deciding which RPC calls the VUI /rpc proxy may forward.
         """
         return self.config.rpc_allow_list
-
-    # pylint: disable=unused-argument
-    @Core.receiver('onsetup')
-    def onsetup(self, sender, **kwargs):
-        self.vip.rpc.export(self._auto_allow_csr, 'auto_allow_csr')
-        self.vip.rpc.export(self._is_auto_allow_csr, 'is_auto_allow_csr')
-
-    def _is_auto_allow_csr(self):
-        return self._csr_endpoints.auto_allow_csr
-
-    def _auto_allow_csr(self, auto_allow_csr):
-        self._csr_endpoints.auto_allow_csr = auto_allow_csr
-
-    def remove_unconnnected_routes(self):
-        peers = self.vip.peerlist().get()
-
-        for p in self.peer_routes:
-            if p not in peers:
-                del self.peer_routes[p]
 
     @RPC.export
     def get_user_claims(self, bearer):
@@ -318,12 +321,34 @@ class PlatformWebService(Agent):
         else:
             raise ValueError("Configuration error secret key or web ssl cert must be not None.")
 
-        return claims if claims.get('grant_type') == 'access_token' else {}
+        if claims.get('grant_type') != 'access_token' or not self._revoked_sessions.allows(claims):
+            return {}
+        return claims
+
+    def _session_revoked(self, sid):
+        """Close the websockets that were opened with tokens of a revoked login session."""
+        manager = getattr(self._vui_endpoints, 'pubsub_manager', None)
+        if manager is None:
+            return
+        closed = manager.close_session_sockets(sid)
+        if closed:
+            _log.info('Closed %d websocket(s) of a revoked web session.', closed)
+
+    def _websocket_owner_check(self, endpoint):
+        """Raise unless the calling peer registered the websocket endpoint."""
+        identity = self.vip.rpc.context.vip_message.peer
+        owner = self.appContainer._wsregistry.get(endpoint) if self.appContainer else None
+        if owner is None:
+            raise ValueError(f"Websocket endpoint {endpoint} is not registered.")
+        if owner != identity:
+            _log.warning(f"Peer {identity} attempted to use websocket endpoint {endpoint} owned by {owner}.")
+            raise PermissionError(f"Websocket endpoint {endpoint} is registered to another agent.")
+        return identity
 
     @RPC.export
     def websocket_send(self, endpoint, message):
-        _log.debug("Sending data to {} with message {}".format(endpoint,
-                                                               message))
+        self._websocket_owner_check(endpoint)
+        _log.debug("Sending data to websocket endpoint {}".format(endpoint))
         self.appContainer.websocket_send(endpoint, message)
 
     @RPC.export
@@ -333,15 +358,6 @@ class PlatformWebService(Agent):
     @RPC.export
     def get_bind_web_address(self):
         return self.config.bind_address
-
-    @RPC.export
-    def get_volttron_central_address(self):
-        """Return address of external Volttron Central
-
-        Note: this only applies to Volttron Central agents that are
-        running on a different platform.
-        """
-        return self.volttron_central_address
 
     @RPC.export
     def register_endpoint(self, endpoint, res_type):
@@ -496,6 +512,9 @@ class PlatformWebService(Agent):
             _log.warning(f"Peer {identity} attempted to register reserved websocket endpoint {endpoint}.")
             raise ReservedRouteError(f"Endpoint {endpoint} is reserved for the platform web service.")
         if self.appContainer:
+            existing = self.appContainer._wsregistry.get(endpoint)
+            if existing is not None and existing != identity:
+                raise DuplicateEndpointError(f"Websocket endpoint {endpoint} is registered to another agent.")
             self.appContainer.create_ws_endpoint(endpoint, identity)
         else:
             _log.error('Attempting to register endpoint without web'
@@ -505,9 +524,7 @@ class PlatformWebService(Agent):
 
     @RPC.export
     def unregister_websocket(self, endpoint):
-        # Get calling identity from whom the request came from
-        identity = self.vip.rpc.context.vip_message.peer
-
+        identity = self._websocket_owner_check(endpoint)
         _log.debug('Caller identity: {}'.format(identity))
         self.appContainer.destroy_ws_endpoint(endpoint)
 
@@ -566,7 +583,14 @@ class PlatformWebService(Agent):
 
         # only expose a partial list of the env variables to the registered
         # agents (never credentials, see PEER_ENV_KEYS).
-        data = env['wsgi.input'].read().decode('utf-8')
+        # A websocket upgrade request (ws4py puts the raw socket in env['ws4py.socket']) carries no body; reading
+        # wsgi.input for it blocks until the client closes the connection, so the handshake would never be sent.
+        try:
+            data = '' if 'ws4py.socket' in env else env['wsgi.input'].read().decode('utf-8')
+        except UnicodeDecodeError:
+            _log.warning(f'Request body to {path_info!r} is not UTF-8')
+            return Response(jsonapi.dumps({'error': 'Request body is not UTF-8'}), 400,
+                            content_type='application/json')(env, start_response)
         passenv = {k: env[k] for k in PEER_ENV_KEYS if k in env}
 
         _log.debug('path_info is: {}'.format(path_info))
@@ -576,7 +600,12 @@ class PlatformWebService(Agent):
         _log.debug('Peer path_info is associated with: {}'.format(peer))
 
         if self.is_json_content(env):
-            data = jsonapi.loads(data)
+            try:
+                data = jsonapi.loads(data)
+            except (TypeError, ValueError):
+                _log.warning(f'Malformed JSON body in a request to {path_info!r}')
+                return Response(jsonapi.dumps({'error': 'Malformed JSON body'}), 400,
+                                content_type='application/json')(env, start_response)
 
         # if we have a peer then we expect to call that peer's web subsystem
         # callback to perform whatever is required of the method.
@@ -592,11 +621,9 @@ class PlatformWebService(Agent):
 
         env['JINJA2_TEMPLATE_ENV'] = tplenv
 
-        # if ws4pi.socket is set then this connection is a web socket
-        # and so we return the websocket response.
-
-        if 'ws4py.socket' in env:
-            return env['ws4py.socket'](env, start_response)
+        # Websocket upgrade requests are not handled here. Agent websockets registered with register_websocket are
+        # completed by WebApplicationWrapper before this method is reached, and routes that upgrade their own
+        # connections (e.g. the VUI pubsub endpoints) perform the ws4py handshake themselves below.
 
         for k, t, v in self.registered_routes:
             if k.match(path_info):
@@ -707,8 +734,9 @@ class PlatformWebService(Agent):
                 if res['error']['code'] == UNAUTHORIZED:
                     start_response('401 Unauthorized', [
                         ('Content-Type', 'text/html')])
-                    message = res['error']['message']
-                    code = res['error']['code']
+                    # The message is supplied by the peer agent; escape it before embedding it in HTML.
+                    message = html.escape(str(res['error']['message']))
+                    code = html.escape(str(res['error']['code']))
                     return ['<h1>{}</h1>\n<h2>CODE:{}</h2>'.format(message, code).encode('utf-8')]
 
             start_response('200 OK',
@@ -781,6 +809,29 @@ class PlatformWebService(Agent):
 
     @Core.receiver('onstart')
     def startupagent(self, sender, **kwargs):
+        """Start the web server.
+
+        A failure is logged and reflected in the agent's health status. Left to the core, an exception in an
+        onstart receiver only prints a greenlet traceback to stderr and never reaches volttron.log, so a service
+        that silently failed to start looked healthy until shutdown.
+        """
+        try:
+            self._start_web_server()
+        except Exception as e:
+            _log.exception('Web service failed to start; the HTTP server is not running.')
+            try:
+                self.vip.health.set_status(STATUS_BAD, f'Web service failed to start: {e.__class__.__name__}: {e}')
+            except Exception:    # health is best-effort here; the log line above is the primary signal
+                pass
+
+    @staticmethod
+    def _require_files(**paths):
+        """Raise FileNotFoundError naming every configured path that is not an existing file."""
+        missing = [f'{name}={path}' for name, path in paths.items() if path is not None and not os.path.isfile(path)]
+        if missing:
+            raise FileNotFoundError('Configured web TLS file(s) not found: ' + ', '.join(missing))
+
+    def _start_web_server(self):
         ssl_key = self.config.ssl_key
         ssl_cert = self.config.ssl_cert
         rpc_caller = self.vip.rpc
@@ -792,6 +843,9 @@ class PlatformWebService(Agent):
 
                 if not os.path.isfile(ssl_cert) or not os.path.isfile(ssl_key):
                     self._certs.create_signed_cert_files(base_filename, cert_type='server')
+            else:
+                # Configured paths must exist; otherwise the failure surfaces deep inside the cert reader.
+                self._require_files(web_ssl_cert=ssl_cert, web_ssl_key=ssl_key)
 
             if ssl_key is not None and ssl_cert is not None and self._admin_endpoints is None:
                 self._admin_endpoints = AdminEndpoints(ssl_public_key=CertWrapper.get_cert_public_key(ssl_cert),
@@ -812,13 +866,18 @@ class PlatformWebService(Agent):
         # Allow authentication endpoint from any https connection
         if self.config.bind_address.scheme == 'https':
             ssl_private_key = CertWrapper.get_private_key(ssl_key)
-            ssl_public_key = CertWrapper.get_cert_public_key(self.config.ssl_cert)
-            for rt in AuthenticateEndpoints(tls_private_key=ssl_private_key, tls_public_key=ssl_public_key).get_routes():
-                self.registered_routes.append(rt)
+            # Use the resolved cert path: when the platform generated its own server certificate the configured
+            # value is None and only the local variable holds the file that was created above.
+            ssl_public_key = CertWrapper.get_cert_public_key(ssl_cert)
+            self._authenticate_endpoints = AuthenticateEndpoints(
+                tls_private_key=ssl_private_key, tls_public_key=ssl_public_key,
+                revoked_sessions=self._revoked_sessions, on_revoke=self._session_revoked)
         else:
             # We don't have a private ssl key if we aren't using ssl.
-            for rt in AuthenticateEndpoints(web_secret_key=self.config.secret_key.get_secret_value()).get_routes():
-                self.registered_routes.append(rt)
+            self._authenticate_endpoints = AuthenticateEndpoints(
+                web_secret_key=self.config.secret_key.get_secret_value(),
+                revoked_sessions=self._revoked_sessions, on_revoke=self._session_revoked)
+        self.registered_routes.extend(self._authenticate_endpoints.get_routes())
 
         static_dir = os.path.join(os.path.dirname(__file__), "static")
         self.registered_routes.append((re.compile('^/.*$'), 'path', static_dir))
@@ -832,10 +891,39 @@ class PlatformWebService(Agent):
                              keyfile=ssl_key)
         else:
             svr = WSGIServer(((self.config.bind_address.host), port), self.appContainer)
+        self._server = svr
         self._server_greenlet = gevent.spawn(svr.serve_forever)
+
+    # Seconds onstop gives in-flight requests, then the server greenlet, before giving up on each.
+    STOP_TIMEOUT = 5
 
     @Core.receiver('onstop')
     def onstop(self, sender, **kwargs):
+        """Close websockets, stop the HTTP server and wait for its greenlet.
+
+        Tolerates a service that never finished ``startupagent`` (server and greenlet still None), and stops the
+        server explicitly: ``serve_forever`` never returns on its own, so a bare join would always run to its
+        timeout and leave the listener open.
+        """
         _log.debug("Stopping web agent.")
-        if not self._server_greenlet.dead:
-            self._server_greenlet.join(timeout=10)
+        manager = getattr(self._vui_endpoints, 'pubsub_manager', None)
+        if manager is not None:
+            try:
+                manager.shutdown()
+            except Exception as e:
+                _log.warning(f'Error closing websockets on stop: {e.__class__.__name__}: {e}')
+        server, greenlet = self._server, self._server_greenlet
+        self._server = self._server_greenlet = None
+        if server is None and greenlet is None:
+            _log.info('Web server never started; nothing to stop.')
+            return
+        if server is not None:
+            try:
+                server.stop(timeout=self.STOP_TIMEOUT)
+            except Exception as e:
+                _log.warning(f'Error stopping the web server: {e.__class__.__name__}: {e}')
+        if greenlet is not None and not greenlet.dead:
+            greenlet.join(timeout=self.STOP_TIMEOUT)
+            if not greenlet.dead:
+                _log.warning('Web server greenlet did not exit; killing it.')
+                greenlet.kill(block=False)

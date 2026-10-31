@@ -462,6 +462,14 @@ paths:
             type: string
           required: true
           example: platform.listener
+      parameters:
+        - name: metadata
+          in: query
+          required: false
+          description: Also return a `configs` object with the stored type, modified time, etag and size of every entry (with the `-` wildcard, the number of entries per identity). HEAD is accepted on this route.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Successful response
@@ -605,6 +613,24 @@ paths:
             type: string
           required: true
           example: config
+      parameters:
+        - name: metadata
+          in: query
+          required: false
+          description: Return the entry's metadata (type, modified, etag, size) instead of its contents. Every response carries ETag, Config-Type and Last-Modified headers; If-None-Match and If-Modified-Since answer 304. HEAD is accepted.
+          schema:
+            type: boolean
+            default: false
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: If-Modified-Since
+          in: header
+          required: false
+          schema:
+            type: string
       responses:
         '200':
           description: Successful response

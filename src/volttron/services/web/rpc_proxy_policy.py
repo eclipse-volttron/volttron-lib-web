@@ -161,13 +161,15 @@ def parse_allow_list(allow_list) -> tuple[AllowListEntry, ...]:
 class RpcProxyPolicy:
     """Decides which RPC calls the VUI proxy may forward. See the module docstring for the rules."""
 
-    def __init__(self, allow_list=None):
+    def __init__(self, allow_list=None, denied_peers: Iterable[str] = ()):
         self.entries: tuple[AllowListEntry, ...] = parse_allow_list(allow_list)
+        # The fixed deny-list plus any deployment-specific identities, e.g. a driver running under a non-default
+        # VIP identity (see WebServiceConfig.driver_vip_identity).
+        self.denied_peers: frozenset[str] = RPC_PROXY_DENIED_PEERS | frozenset(denied_peers)
 
-    @staticmethod
-    def is_denied(vip_identity: str, method_name: str | None = None) -> bool:
-        """True if the fixed deny-list refuses this peer, or this method on this peer."""
-        if vip_identity in RPC_PROXY_DENIED_PEERS:
+    def is_denied(self, vip_identity: str, method_name: str | None = None) -> bool:
+        """True if the deny-list refuses this peer, or this method on this peer."""
+        if vip_identity in self.denied_peers:
             return True
         return method_name is not None and method_name in RPC_PROXY_DENIED_METHODS.get(vip_identity, ())
 
@@ -188,7 +190,8 @@ class RpcProxyPolicy:
         return [m for m in methods if self.is_allowed(platform, vip_identity, m)]
 
     def __eq__(self, other):
-        return isinstance(other, RpcProxyPolicy) and self.entries == other.entries
+        return (isinstance(other, RpcProxyPolicy) and self.entries == other.entries
+                and self.denied_peers == other.denied_peers)
 
     def __repr__(self):
         return f'RpcProxyPolicy([{", ".join(repr(str(e)) for e in self.entries)}])'

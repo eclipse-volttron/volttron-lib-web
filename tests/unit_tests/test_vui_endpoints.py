@@ -24,7 +24,6 @@
 
 import json
 import mock
-import pickle
 import pytest
 import re
 
@@ -33,9 +32,10 @@ from werkzeug import Response
 
 # mock.patch('volttron.services.web.vui_endpoints.endpoint', lambda x: x).start()
 
-from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL
+from volttron.client.known_identities import CONFIGURATION_STORE, CONTROL, PLATFORM_DRIVER, PLATFORM_HEALTH
 
 from volttron.services.web.rpc_proxy_policy import RpcProxyPolicy
+from volttron.lib.tree import DeviceTree
 from volttron.services.web.vui_endpoints import VUIEndpoints
 from volttron.utils.jsonrpc import RemoteError
 
@@ -66,8 +66,33 @@ ACTIVE_ROUTES = {
             }
 }
 
-# TODO: Need new DEV_TREE: This pickle was built on monolithic.
-DEV_TREE = b'\x80\x04\x952\x11\x00\x00\x00\x00\x00\x00\x8c volttron.lib.topic_tree\x94\x8c\nDeviceTree\x94\x93\x94)\x81\x94}\x94(\x8c\x0b_identifier\x94\x8c$43dd9fcc-0066-11ec-afd5-f834419e14e3\x94\x8c\nnode_class\x94h\x00\x8c\nDeviceNode\x94\x93\x94\x8c\x06_nodes\x94}\x94(\x8c\x07devices\x94h\t)\x81\x94}\x94(h\x05h\x0c\x8c\x04_tag\x94h\x0c\x8c\x08expanded\x94\x88\x8c\x0c_predecessor\x94}\x94h\x06Ns\x8c\x0b_successors\x94\x8c\x0bcollections\x94\x8c\x0bdefaultdict\x94\x93\x94\x8c\x08builtins\x94\x8c\x04list\x94\x93\x94\x85\x94R\x94h\x06]\x94\x8c\x0edevices/Campus\x94as\x8c\x04data\x94N\x8c\x10_initial_tree_id\x94h\x06\x8c\x0csegment_type\x94\x8c\nTOPIC_ROOT\x94\x8c\x05topic\x94\x8c\x00\x94ubh\x1dh\t)\x81\x94}\x94(h\x05h\x1dh\x0f\x8c\x06Campus\x94h\x10\x88h\x11}\x94h\x06h\x0csh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c\x18devices/Campus/Building1\x94\x8c\x18devices/Campus/Building2\x94\x8c\x18devices/Campus/Building3\x94esh\x1eNh\x1fh\x06h \x8c\rTOPIC_SEGMENT\x94h"\x8c\x06Campus\x94ubh+h\t)\x81\x94}\x94(h\x05h+h\x0f\x8c\tBuilding1\x94h\x10\x88h\x11}\x94h\x06h\x1dsh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94\x8c\x1edevices/Campus/Building1/Fake1\x94ash\x1eNh\x1fh\x06h h.h"\x8c\x10Campus/Building1\x94ubh7h\t)\x81\x94}\x94(h\x05h7h\x0f\x8c\x05Fake1\x94h\x10\x88h\x11}\x94h\x06h+sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c3devices/Campus/Building1/Fake1/SampleWritableFloat1\x94\x8c*devices/Campus/Building1/Fake1/SampleBool1\x94esh\x1e}\x94(\x8c\rdriver_config\x94}\x94\x8c\x08interval\x94K<\x8c\x08timezone\x94\x8c\nUS/Pacific\x94\x8c\x0bdriver_type\x94\x8c\nfakedriver\x94\x8c\x19publish_breadth_first_all\x94\x89\x8c\x13publish_depth_first\x94\x89\x8c\x15publish_breadth_first\x94\x89\x8c\x06campus\x94\x8c\x06campus\x94\x8c\x08building\x94\x8c\x08building\x94\x8c\x04unit\x94\x8c\x0bfake_device\x94uh\x1fh\x06h \x8c\x06DEVICE\x94h"\x8c\x16Campus/Building1/Fake1\x94ubh@h\t)\x81\x94}\x94(h\x05h@h\x0f\x8c\x14SampleWritableFloat1\x94h\x10\x88h\x11}\x94h\x06h7sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(\x8c\nPoint Name\x94\x8c\x14SampleWritableFloat1\x94\x8c\x05Units\x94\x8c\x03PPM\x94\x8c\rUnits Details\x94\x8c\x111000.00 (default)\x94\x8c\x08Writable\x94\x8c\x04TRUE\x94\x8c\x0eStarting Value\x94\x8c\x0210\x94\x8c\x04Type\x94\x8c\x05float\x94\x8c\x05Notes\x94\x8c-Setpoint to enable demand control ventilation\x94uh\x1fh\x06h \x8c\x05POINT\x94h"\x8c+Campus/Building1/Fake1/SampleWritableFloat1\x94ubhAh\t)\x81\x94}\x94(h\x05hAh\x0f\x8c\x0bSampleBool1\x94h\x10\x88h\x11}\x94h\x06\x8c\x1edevices/Campus/Building1/Fake1\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(h]\x8c\x0bSampleBool1\x94h_\x8c\x08On / Off\x94ha\x8c\x06on/off\x94hc\x8c\x05FALSE\x94he\x8c\x04TRUE\x94hg\x8c\x07boolean\x94hi\x8c$Status indidcator of cooling stage 1\x94uh\x1fh\x06h hkh"\x8c"Campus/Building1/Fake1/SampleBool1\x94ubh,h\t)\x81\x94}\x94(h\x05h,h\x0f\x8c\tBuilding2\x94h\x10\x88h\x11}\x94h\x06\x8c\x0edevices/Campus\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94\x8c\x1edevices/Campus/Building2/Fake1\x94ash\x1eNh\x1fh\x06h h.h"\x8c\x10Campus/Building2\x94ubh\x86h\t)\x81\x94}\x94(h\x05h\x86h\x0f\x8c\x05Fake1\x94h\x10\x88h\x11}\x94h\x06h,sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c3devices/Campus/Building2/Fake1/SampleWritableFloat1\x94\x8c*devices/Campus/Building2/Fake1/SampleBool1\x94esh\x1e}\x94(\x8c\rdriver_config\x94}\x94\x8c\x08interval\x94K<\x8c\x08timezone\x94\x8c\nUS/Pacific\x94\x8c\x0bdriver_type\x94\x8c\nfakedriver\x94\x8c\x19publish_breadth_first_all\x94\x89\x8c\x13publish_depth_first\x94\x89\x8c\x15publish_breadth_first\x94\x89\x8c\x06campus\x94\x8c\x06campus\x94\x8c\x08building\x94\x8c\x08building\x94\x8c\x04unit\x94\x8c\x0bfake_device\x94uh\x1fh\x06h hSh"\x8c\x16Campus/Building2/Fake1\x94ubh\x8fh\t)\x81\x94}\x94(h\x05h\x8fh\x0f\x8c\x14SampleWritableFloat1\x94h\x10\x88h\x11}\x94h\x06h\x86sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(\x8c\nPoint Name\x94\x8c\x14SampleWritableFloat1\x94\x8c\x05Units\x94\x8c\x03PPM\x94\x8c\rUnits Details\x94\x8c\x111000.00 (default)\x94\x8c\x08Writable\x94\x8c\x04TRUE\x94\x8c\x0eStarting Value\x94\x8c\x0210\x94\x8c\x04Type\x94\x8c\x05float\x94\x8c\x05Notes\x94\x8c-Setpoint to enable demand control ventilation\x94uh\x1fh\x06h hkh"\x8c+Campus/Building2/Fake1/SampleWritableFloat1\x94ubh\x90h\t)\x81\x94}\x94(h\x05h\x90h\x0f\x8c\x0bSampleBool1\x94h\x10\x88h\x11}\x94h\x06\x8c\x1edevices/Campus/Building2/Fake1\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(h\xab\x8c\x0bSampleBool1\x94h\xad\x8c\x08On / Off\x94h\xaf\x8c\x06on/off\x94h\xb1\x8c\x05FALSE\x94h\xb3\x8c\x04TRUE\x94h\xb5\x8c\x07boolean\x94h\xb7\x8c$Status indidcator of cooling stage 1\x94uh\x1fh\x06h hkh"\x8c"Campus/Building2/Fake1/SampleBool1\x94ubh-h\t)\x81\x94}\x94(h\x05h-h\x0f\x8c\tBuilding3\x94h\x10\x88h\x11}\x94h\x06\x8c\x0edevices/Campus\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94\x8c\x1edevices/Campus/Building3/Fake1\x94ash\x1eNh\x1fh\x06h h.h"\x8c\x10Campus/Building3\x94ubh\xd3h\t)\x81\x94}\x94(h\x05h\xd3h\x0f\x8c\x05Fake1\x94h\x10\x88h\x11}\x94h\x06h-sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94(\x8c3devices/Campus/Building3/Fake1/SampleWritableFloat1\x94\x8c*devices/Campus/Building3/Fake1/SampleBool1\x94esh\x1e}\x94(\x8c\rdriver_config\x94}\x94\x8c\x08interval\x94K<\x8c\x08timezone\x94\x8c\nUS/Pacific\x94\x8c\x0bdriver_type\x94\x8c\nfakedriver\x94\x8c\x19publish_breadth_first_all\x94\x89\x8c\x13publish_depth_first\x94\x89\x8c\x15publish_breadth_first\x94\x89\x8c\x06campus\x94\x8c\x06campus\x94\x8c\x08building\x94\x8c\x08building\x94\x8c\x04unit\x94\x8c\x0bfake_device\x94uh\x1fh\x06h hSh"\x8c\x16Campus/Building3/Fake1\x94ubh\xdch\t)\x81\x94}\x94(h\x05h\xdch\x0f\x8c\x14SampleWritableFloat1\x94h\x10\x88h\x11}\x94h\x06h\xd3sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(\x8c\nPoint Name\x94\x8c\x14SampleWritableFloat1\x94\x8c\x05Units\x94\x8c\x03PPM\x94\x8c\rUnits Details\x94\x8c\x111000.00 (default)\x94\x8c\x08Writable\x94\x8c\x04TRUE\x94\x8c\x0eStarting Value\x94\x8c\x0210\x94\x8c\x04Type\x94\x8c\x05float\x94\x8c\x05Notes\x94\x8c-Setpoint to enable demand control ventilation\x94uh\x1fh\x06h hkh"\x8c+Campus/Building3/Fake1/SampleWritableFloat1\x94ubh\xddh\t)\x81\x94}\x94(h\x05h\xddh\x0f\x8c\x0bSampleBool1\x94h\x10\x88h\x11}\x94h\x06\x8c\x1edevices/Campus/Building3/Fake1\x94sh\x13h\x16h\x19\x85\x94R\x94h\x06]\x94sh\x1e}\x94(h\xf8\x8c\x0bSampleBool1\x94h\xfa\x8c\x08On / Off\x94h\xfc\x8c\x06on/off\x94h\xfe\x8c\x05FALSE\x94j\x00\x01\x00\x00\x8c\x04TRUE\x94j\x02\x01\x00\x00\x8c\x07boolean\x94j\x04\x01\x00\x00\x8c$Status indidcator of cooling stage 1\x94uh\x1fh\x06h hkh"\x8c"Campus/Building3/Fake1/SampleBool1\x94ubu\x8c\x04root\x94h\x0c\x8c\x07_reader\x94X\x9c\x01\x00\x00devices\n\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Campus\n    \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 Building1\n    \xe2\x94\x82   \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Fake1\n    \xe2\x94\x82       \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 SampleBool1\n    \xe2\x94\x82       \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 SampleWritableFloat1\n    \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 Building2\n    \xe2\x94\x82   \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Fake1\n    \xe2\x94\x82       \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 SampleBool1\n    \xe2\x94\x82       \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 SampleWritableFloat1\n    \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Building3\n        \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 Fake1\n            \xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 SampleBool1\n            \xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 SampleWritableFloat1\n\x94ub.'
+DEVICE_LIST = ['Campus/Building1/Fake1', 'Campus/Building2/Fake1', 'Campus/Building3/Fake1']
+DEVICE_CONFIG = {'driver_config': {}, 'interval': 60, 'timezone': 'US/Pacific', 'driver_type': 'fakedriver',
+                 'publish_breadth_first_all': False, 'publish_depth_first': False, 'publish_breadth_first': False,
+                 'campus': 'campus', 'building': 'building', 'unit': 'fake_device'}
+REGISTRY_CONFIG = [
+    {'Volttron Point Name': 'SampleWritableFloat1', 'Units': 'PPM', 'Units Details': '1000.00 (default)',
+     'Writable': 'TRUE', 'Starting Value': '10', 'Type': 'float',
+     'Notes': 'Setpoint to enable demand control ventilation'},
+    {'Volttron Point Name': 'SampleBool1', 'Units': 'On / Off', 'Units Details': 'on/off', 'Writable': 'FALSE',
+     'Starting Value': 'TRUE', 'Type': 'boolean', 'Notes': 'Status indidcator of cooling stage 1'}
+]
+
+
+def _build_device_tree() -> DeviceTree:
+    """Build the device tree the same way DeviceTree.from_store does, without a config store."""
+    devices = [f'devices/{d}' for d in DEVICE_LIST]
+    tree = DeviceTree(devices)
+    for d in devices:
+        # Node.topic reads data['topic'], which TopicTree.add_node set on creation; keep it when replacing data.
+        tree.update_node(d, data={'config': dict(DEVICE_CONFIG), 'segment_type': 'DEVICE',
+                                  'topic': d[len('devices/'):]})
+        for pnt in REGISTRY_CONFIG:
+            pnt = dict(pnt)
+            point_name = pnt.pop('Volttron Point Name')
+            n = tree.create_node(point_name, f"{d}/{point_name}", parent=d, data=pnt)
+            n.data['segment_type'] = 'POINT'
+    return tree
 
 
 def gen_response_codes(valid_codes: list, exclude: list = None):
@@ -270,16 +295,22 @@ def _mock_agents_rpc(peer, meth, *args, external_platform=None, **kwargs):
                                                                'config2': {'setting1': 3, 'setting2': 4}}},
                               {'identity': 'run2', 'configs': {'config1': {'setting1': 5, 'setting2': 6},
                                                                'config2': {'setting1': 7, 'setting2': 8}}}]
-    if peer == CONFIGURATION_STORE and meth == 'manage_get':
+    # A CSV config kept outside config_definition_list so the list/links expectations above are unchanged.
+    csv_configs = {('run1', 'points.csv'): ('Point Name,Value\nA,1\n', [{'Point Name': 'A', 'Value': '1'}])}
+    if peer == CONFIGURATION_STORE and meth in ('get_config', 'get_metadata'):
+        if (args[0], args[1]) in csv_configs:
+            raw, parsed = csv_configs[(args[0], args[1])]
+            return parsed if meth == 'get_config' else {'type': 'csv', 'modified': None, 'data': raw}
         config_list = [a['configs'].get(args[1]) for a in config_definition_list if a['identity'] == args[0]]
         if not config_list or config_list == [None]:
             raise RemoteError(f'''builtins.KeyError('No configuration file \"{args[1]}\" for VIP IDENTIY {args[0]}')''',
                               exc_info={"exc_type": '', "exc_args": []})
-        return config_list[0] if config_list else []
-    elif peer == CONFIGURATION_STORE and meth == 'manage_list_configs':
+        parsed = config_list[0]
+        return parsed if meth == 'get_config' else {'type': 'json', 'modified': None, 'data': json.dumps(parsed)}
+    elif peer == CONFIGURATION_STORE and meth == 'list_configs':
         config_list = [a['configs'].keys() for a in config_definition_list if a['identity'] == args[0]]
         return config_list[0] if config_list else []
-    elif peer == CONFIGURATION_STORE and meth == 'manage_list_stores':
+    elif peer == CONFIGURATION_STORE and meth == 'list_stores':
         return [a['identity'] for a in config_definition_list]
     elif peer == CONTROL and meth == 'list_agents':
         return list_of_agents
@@ -290,10 +321,17 @@ def _mock_agents_rpc(peer, meth, *args, external_platform=None, **kwargs):
         return [['1', '', [10, None]], ['2', '', [11, None]], ['4', '', [12, 0]]]
     elif peer == CONTROL and meth == 'peerlist':
         return ['run1', 'run2', 'hid1', 'hid2']
+    elif peer == PLATFORM_HEALTH and meth == 'get_platform_health':
+        return {i: {'peer': i, 'service_agent': i.startswith('hid'), 'connected': '2026-10-21T00:00:00',
+                    'last_heartbeat': '2026-10-21T00:00:05', 'message': 'GOOD'} for i in ['run1', 'run2', 'hid1', 'hid2']}
+    elif peer == CONTROL and meth in ('start_agent', 'stop_agent', 'restart_agent', 'prioritize_agent'):
+        return None
     elif peer == CONTROL and meth == 'inspect':
         return {'methods': ['list_agents', 'peerlist', 'status_agents']}
     elif peer == CONTROL and meth == 'status_agents.inspect':
         return {'params': {}}
+    elif meth == 'inspect':
+        return {'methods': ['some_method']}
     elif peer == 'agents_rpc' and meth == 'kw_only':
         return [kwargs['foo'], kwargs['bar']]
     elif peer == 'agents_rpc' and meth == 'args_and_kw':
@@ -326,6 +364,7 @@ def test_get_agents(mock_platform_web_service, agent_state, include_hidden, expe
 def test_handle_platforms_agents_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/agents', method=method, HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents(env, {})
     check_response_codes(response, status)
 
@@ -358,6 +397,7 @@ def test_handle_platforms_agents_agent_status_code(mock_platform_web_service, me
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/agent_vip', method=method,
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_agent(env, {})
     check_response_codes(response, status)
 
@@ -377,7 +417,7 @@ def test_handle_platforms_agents_agent_response(mock_platform_web_service, vip_i
     check_links_return(response, keys=expected, leading_path=path)
 
 
-@pytest.mark.parametrize("method, status", gen_response_codes(['GET'], ['POST', 'DELETE']))
+@pytest.mark.parametrize("method, status", gen_response_codes(['GET', 'HEAD'], ['POST', 'DELETE']))
 def test_handle_platforms_agents_configs_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs', method=method,
                            HTTP_AUTHORIZATION='Bearer foo')
@@ -387,7 +427,7 @@ def test_handle_platforms_agents_configs_status_code(mock_platform_web_service, 
     check_response_codes(response, status)
 
 
-@pytest.mark.parametrize("method, status", gen_response_codes(['GET'], ['PUT', 'DELETE']))
+@pytest.mark.parametrize("method, status", gen_response_codes(['GET', 'HEAD'], ['PUT', 'DELETE']))
 def test_handle_platforms_agents_configs_config_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs/config1', method=method,
                            HTTP_AUTHORIZATION='Bearer foo')
@@ -430,6 +470,38 @@ def test_handle_platforms_agents_configs_config_get_response(mock_platform_web_s
     assert json.loads(response.response[0]) == expected
 
 
+@pytest.mark.parametrize('config_name, accept, status, content_type, body', [
+    ('config1', None, 200, 'application/json', '{"setting1": 1, "setting2": 2}'),
+    ('config1', '*/*', 200, 'application/json', '{"setting1": 1, "setting2": 2}'),
+    ('config1', 'text/csv, application/json;q=0.5', 200, 'application/json', '{"setting1": 1, "setting2": 2}'),
+    ('points.csv', None, 200, 'application/json', '[{"Point Name": "A", "Value": "1"}]'),
+    ('points.csv', 'text/csv', 200, 'text/csv', 'Point Name,Value\nA,1\n'),
+    ('points.csv', 'text/plain', 200, 'text/plain', 'Point Name,Value\nA,1\n'),
+    ('config1', 'text/plain', 200, 'text/plain', '{"setting1": 1, "setting2": 2}'),
+    ('config1', 'text/*', 200, 'text/plain', '{"setting1": 1, "setting2": 2}'),
+    ('config1', 'text/csv', 406, 'application/json', None),
+    ('config1', 'application/xml', 406, 'application/json', None),
+])
+def test_handle_platforms_agents_configs_config_get_accept(mock_platform_web_service, config_name, accept, status,
+                                                           content_type, body):
+    path = f'/vui/platforms/my_instance_name/agents/run1/configs/{config_name}'
+    headers = {'HTTP_ACCEPT': accept} if accept is not None else {}
+    env = get_test_web_env(path, method='GET', HTTP_AUTHORIZATION='Bearer foo', **headers)
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = MagicMock(wraps=_mock_agents_rpc)
+    response = vui_endpoints.handle_platforms_agents_configs(env, {})
+    assert response.status_code == status
+    assert response.content_type.startswith(content_type)
+    if body is not None:
+        assert response.get_data(as_text=True) == body
+    if status == 406:
+        assert 'Error' in json.loads(response.get_data(as_text=True))
+    if content_type == 'application/json' and status == 200:
+        # The metadata for the headers is fetched first; the body still comes from the store's parsed read.
+        vui_endpoints._rpc.assert_any_call(CONFIGURATION_STORE, 'get_config', 'run1', config_name, raw=False,
+                                           external_platform='my_instance_name')
+
+
 @pytest.mark.parametrize('vip_identity, config_name, data_given, data_passed, config_type, status', [
     ('run1', 'config', {"setting1": 30, "setting2": 0}, '{"setting1": 30, "setting2": 0}', 'application/json',
      '204'),
@@ -451,7 +523,7 @@ def test_handle_platforms_agents_configs_config_put_response(mock_platform_web_s
     config_type = re.search(r'([^\/]+$)', config_type).group() if config_type in ['application/json',
                                                                                   'text/csv'] else 'raw'
     if status == '204':
-        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'manage_store', vip_identity, config_name,
+        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'set_config', vip_identity, config_name,
                                                        data_passed, config_type, external_platform='my_instance_name')])
     elif status == '400':
         assert json.loads(response.response[0]) == \
@@ -481,7 +553,7 @@ def test_handle_platforms_agents_configs_post_response(mock_platform_web_service
     response = vui_endpoints.handle_platforms_agents_configs(env, data_given)
     check_response_codes(response, status)
     if status == '204':
-        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'manage_store', vip_identity, config_name,
+        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'set_config', vip_identity, config_name,
                                                        data_passed, config_type, external_platform='my_instance_name')])
     elif status == '400':
         assert json.loads(response.response[0]) == \
@@ -491,20 +563,77 @@ def test_handle_platforms_agents_configs_post_response(mock_platform_web_service
                {'Error': f'Configuration: "{config_name}" already exists for agent: "{vip_identity}"'}
 
 
-@pytest.mark.parametrize('vip_identity_given, vip_identity_passed, status', [
-    ('run1', 'run1', '204')
+def _platform_refusal(method):
+    return RemoteError(f"User platform.web does not have access to call platform.config_store.{method} ",
+                       exc_type='volttron.types.auth.AuthException',
+                       exc_args=[f'User platform.web does not have access to call platform.config_store.{method} '])
+
+
+@pytest.mark.parametrize('http_method, path, data, denied_rpc', [
+    ('PUT', '/vui/platforms/my_instance_name/agents/run1/configs/config', {'a': 1}, 'set_config'),
+    ('POST', '/vui/platforms/my_instance_name/agents/run1/configs?config-name=new', {'a': 1}, 'set_config'),
+    ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs/config1', {}, 'delete_config'),
+    ('DELETE', '/vui/platforms/my_instance_name/agents/run1/configs?all=true', {}, 'delete_store'),   # past the 409 guard
+])
+def test_handle_platforms_agents_configs_platform_refusal_is_403(mock_platform_web_service, http_method, path, data,
+                                                                 denied_rpc):
+    """platform.web lacking the config-store capability is the web service's privilege problem, not the user's
+    credentials (401) nor a bad request (400): 403 with the platform's reason."""
+    path, _, query = path.partition('?')
+
+    def refusing_rpc(peer, meth, *args, **kwargs):
+        if peer == CONFIGURATION_STORE and meth == denied_rpc:
+            raise _platform_refusal(denied_rpc)
+        return _mock_agents_rpc(peer, meth, *args, **kwargs)
+
+    env = get_test_web_env(path, method=http_method, query_string=query, CONTENT_TYPE='application/json',
+                           HTTP_AUTHORIZATION='Bearer foo')
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = MagicMock(wraps=refusing_rpc)
+    response = vui_endpoints.handle_platforms_agents_configs(env, data)
+    assert response.status_code == 403
+    body = json.loads(response.get_data(as_text=True))
+    assert 'not authorized by the platform' in body['error']
+    assert body['detail'] == f'User platform.web does not have access to call platform.config_store.{denied_rpc}'
+
+
+def test_handle_platforms_agents_configs_other_remote_errors_keep_their_codes(mock_platform_web_service):
+    """A non-authorization RemoteError is still 400 on DELETE (handler) and 500 on PUT (decorator)."""
+    def failing_rpc(peer, meth, *args, **kwargs):
+        if meth in ('set_config', 'delete_config'):
+            raise RemoteError("builtins.ValueError('bad')", exc_type='builtins.ValueError', exc_args=['bad'])
+        return _mock_agents_rpc(peer, meth, *args, **kwargs)
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = MagicMock(wraps=failing_rpc)
+    env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs/config1', method='DELETE',
+                           HTTP_AUTHORIZATION='Bearer foo')
+    assert vui_endpoints.handle_platforms_agents_configs(env, {}).status_code == 400
+    env = get_test_web_env('/vui/platforms/my_instance_name/agents/run1/configs/config1', method='PUT',
+                           CONTENT_TYPE='application/json', HTTP_AUTHORIZATION='Bearer foo')
+    assert vui_endpoints.handle_platforms_agents_configs(env, {'a': 1}).status_code == 500
+
+
+@pytest.mark.parametrize('vip_identity_given, vip_identity_passed, query, status', [
+    ('run1', 'run1', '', '409'),                 # run1 still holds config1 and config2
+    ('run1', 'run1', 'all=true', '204'),         # explicit consent removes them with the store
+    ('stopped1', 'stopped1', '', '204'),         # an empty store needs no consent
 ])
 def test_handle_platforms_agents_configs_delete_response(mock_platform_web_service, vip_identity_given,
-                                                         vip_identity_passed, status):
+                                                         vip_identity_passed, query, status):
     path = f'/vui/platforms/my_instance_name/agents/{vip_identity_given}/configs'
-    env = get_test_web_env(path, method='DELETE', HTTP_AUTHORIZATION='Bearer foo')
+    env = get_test_web_env(path, method='DELETE', query_string=query, HTTP_AUTHORIZATION='Bearer foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
     vui_endpoints._rpc = MagicMock(wraps=_mock_agents_rpc)
     response = vui_endpoints.handle_platforms_agents_configs(env, {})
     check_response_codes(response, status)
+    delete_calls = [c for c in vui_endpoints._rpc.call_args_list if c.args[:2] == (CONFIGURATION_STORE, 'delete_store')]
     if status == '204':
-        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'manage_delete_store', vip_identity_passed,
-                                                       external_platform='my_instance_name')])
+        assert delete_calls == [mock.call(CONFIGURATION_STORE, 'delete_store', vip_identity_passed,
+                                          external_platform='my_instance_name')]
+    else:
+        assert not delete_calls
+        body = json.loads(response.get_data(as_text=True))
+        assert 'all=true' in body['error'] and body['configs'] == ['config1', 'config2']
 
 
 @pytest.mark.parametrize('vip_identity, config_name_given, config_name_passed, status', [
@@ -519,7 +648,7 @@ def test_handle_platforms_agents_configs_config_delete_response(mock_platform_we
     response = vui_endpoints.handle_platforms_agents_configs(env, {})
     check_response_codes(response, status)
     if status == '204':
-        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'manage_delete_config', vip_identity,
+        vui_endpoints._rpc.assert_has_calls([mock.call(CONFIGURATION_STORE, 'delete_config', vip_identity,
                                                        config_name_passed, external_platform='my_instance_name')])
 
 
@@ -589,6 +718,7 @@ def test_handle_platforms_agents_rpc_status_code(mock_platform_web_service, meth
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
     vui_endpoints.rpc_policy = RpcProxyPolicy('*: *')  # these tests cover the handlers, not the allow-list
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_agents_rpc(env, {})
     check_response_codes(response, status)
 
@@ -816,24 +946,23 @@ def test_handle_platforms_agents_tag_delete_response(mock_platform_web_service, 
 
 
 def _mock_devices_rpc(peer, meth, *args, external_platform=None, **kwargs):
-    if peer == 'platform.actuator' and meth == 'get_multiple_points':
-        ret_val = [{}, {}]
-        for topic in args[0]:
-            ret_val[0][topic] = 10.0
-        return ret_val
-    elif peer == 'platform.actuator' and meth == 'set_multiple_points':
+    # The driver's get/set/revert take topic=[<identifier>, ...] and key results by those identifiers.
+    if peer == PLATFORM_DRIVER and meth == 'get':
+        assert all(t.startswith('devices/') for t in kwargs['topic'])
+        return [{t: 10.0 for t in kwargs['topic']}, {}]
+    elif peer == PLATFORM_DRIVER and meth == 'set':
+        assert all(t.startswith('devices/') for t in kwargs['topic'])
+        return [{t: kwargs['value'] for t in kwargs['topic']}, {}]
+    elif peer == PLATFORM_DRIVER and meth == 'revert':
+        assert all(t.startswith('devices/') for t in kwargs['topic'])
         return {}
-    elif peer == 'platform.actuator' and meth == 'revert_device':
-        return None
-    elif peer == 'platform.actuator' and meth == 'revert_point':
-        return None
     elif peer == 'platform.tagging' and meth == 'get_topics_by_tag':
         return []
 
 
 @pytest.mark.parametrize("method, status", gen_response_codes(['GET', 'PUT', 'DELETE']))
 def test_handle_platforms_devices_status_code(mock_platform_web_service, method, status):
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env('/vui/platforms/my_instance_name/devices/Campus/Building1/Fake1/SampleWritableFloat1',
                                method=method, HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -860,7 +989,7 @@ def test_handle_platforms_devices_get_response(mock_platform_web_service, topic,
                                                return_writability, return_values, return_config):
     query_string = f'read-all={read_all}&routes={return_routes}&writability={return_writability}' \
                    f'&values={return_values}&config={return_config}'
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env(f'/vui/platforms/my_instance_name/devices/{topic}', query_string=query_string,
                                method='GET', HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -897,7 +1026,7 @@ def test_handle_platforms_devices_get_response(mock_platform_web_service, topic,
 ])
 def test_handle_platforms_devices_put_response(mock_platform_web_service, topic, is_point, write_all, confirm_values):
     query_string = f'write-all={write_all}&confirm-values={confirm_values}'
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env(f'/vui/platforms/my_instance_name/devices/{topic}', query_string=query_string,
                                method='PUT', HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -936,7 +1065,7 @@ def test_handle_platforms_devices_put_response(mock_platform_web_service, topic,
 def test_handle_platforms_devices_delete_response(mock_platform_web_service, topic, is_point, write_all,
                                                   confirm_values):
     query_string = f'write-all={write_all}&confirm-values={confirm_values}'
-    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=pickle.loads(DEV_TREE)):
+    with mock.patch('volttron.services.web.vui_endpoints.DeviceTree.from_store', return_value=_build_device_tree()):
         env = get_test_web_env(f'/vui/platforms/my_instance_name/devices/{topic}', query_string=query_string,
                                method='DELETE', HTTP_AUTHORIZATION='BEARER foo')
         vui_endpoints = VUIEndpoints(mock_platform_web_service)
@@ -953,6 +1082,7 @@ def test_handle_platforms_devices_delete_response(mock_platform_web_service, top
             for k, v in body.items():
                 keys = list(v.keys())
                 assert 'route' in keys
+                assert 'revert_error' in keys
                 assert 'writable' in keys
                 assert isinstance(v['writable'], bool)
                 if confirm_values:
@@ -995,6 +1125,7 @@ def _mock_historians_rpc(peer, meth, *args, external_platform=None, **kwargs):
 def test_handle_platforms_historians_status_code(mock_platform_web_service, method, status):
     env = get_test_web_env('/vui/platforms/my_instance_name/historians', method=method, HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_agents_rpc
     response = vui_endpoints.handle_platforms_historians(env, {})
     check_response_codes(response, status)
 
@@ -1030,6 +1161,7 @@ def test_handle_platforms_historians_historian_topics_status_code(mock_platform_
     env = get_test_web_env('/vui/platforms/my_instance_name/historians/my_instance_name/topics', method=method,
                            HTTP_AUTHORIZATION='BEARER foo')
     vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints._rpc = _mock_historians_rpc
     response = vui_endpoints.handle_platforms_historians_historian_topics(env, {})
     check_response_codes(response, status)
 
@@ -1104,3 +1236,203 @@ def test_handle_platforms_status_delete_response(mock_platform_web_service):
     check_response_codes(response, '204')
     vui_endpoints._rpc.assert_has_calls([mock.call(CONTROL, 'clear_status', True,
                                                    external_platform='my_instance_name')])
+
+
+# ---------------------------------------------------------------------------- agent selection ('-' wildcard)
+
+def _vui_with_agents(mock_platform_web_service):
+    vui = VUIEndpoints(mock_platform_web_service)
+    vui._rpc = MagicMock(wraps=_mock_agents_rpc)
+    return vui
+
+
+def _call(vui, handler, path, method='GET', query=''):
+    env = get_test_web_env(path, method=method, query_string=query, HTTP_AUTHORIZATION='Bearer foo')
+    response = getattr(vui, handler)(env, {})
+    return response.status_code, json.loads(response.get_data(as_text=True))
+
+
+P = '/vui/platforms/my_instance_name'
+EXT = {'external_platform': 'my_instance_name'}
+
+
+@pytest.mark.parametrize('query, expected', [
+    ('tag=*', {'run1', 'run2', 'stopped1', 'stopped2'}),                  # every tagged agent (all have tags here)
+    ('regex=.', {'run1', 'run2', 'stopped1', 'stopped2'}),                # every installed agent
+    ('tag=r*', {'run1', 'run2'}),
+    ('tag=st2', {'stopped2'}),
+    ('regex=^stopped', {'stopped1', 'stopped2'}),
+    ('tag=*&regex=1$', {'run1', 'stopped1'}),                            # parameters intersect
+    ('tag=nomatch', set()),
+    ('include-hidden=true&regex=^hid', {'hid1', 'hid2'}),
+    ('regex=^hid', set()),                                                # hidden peers excluded by default
+])
+def test_running_selection_get(mock_platform_web_service, query, expected):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', query=query)
+    assert code == 200
+    assert set(body) == expected
+    for identity, entry in body.items():
+        assert entry == {'running': identity in ('run1', 'run2', 'hid1', 'hid2')}
+
+
+@pytest.mark.parametrize('method', ['GET', 'PUT', 'DELETE'])
+def test_selection_without_filter_is_400(mock_platform_web_service, method):
+    """A forgotten filter must not act on every agent: the wildcard requires tag or regex."""
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', method, 'include-hidden=true')
+    assert code == 400 and 'requires a tag or regex' in body['error']
+    assert not [c for c in vui._rpc.call_args_list if c.args[1] in ('start_agent', 'stop_agent', 'restart_agent')]
+
+
+def test_selection_invalid_regex_is_400(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', query='regex=(')
+    assert code == 400 and 'Invalid regex' in body['error']
+
+
+def test_selection_unknown_platform_is_400(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', '/vui/platforms/nope/agents/-/running', query='tag=*')
+    assert code == 400 and 'Unknown platform' in body['error']
+
+
+def test_running_selection_put_starts_only_stopped_agents(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'PUT', 'tag=*')
+    assert code == 200 and set(body) == {'run1', 'run2', 'stopped1', 'stopped2'}
+    started = {c.args[2] for c in vui._rpc.call_args_list if c.args[:2] == (CONTROL, 'start_agent')}
+    assert started == {'3', '4'}                                           # the running agents are left alone
+    assert all(entry['error'] is None for entry in body.values())
+
+
+def test_running_selection_put_restart(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'PUT', 'tag=r1&restart=true')
+    assert code == 200 and list(body) == ['run1']
+    vui._rpc.assert_any_call(CONTROL, 'restart_agent', '1', **EXT)
+
+
+def test_running_selection_delete_stops_only_running_agents(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'DELETE', 'tag=*')
+    stopped = {c.args[2] for c in vui._rpc.call_args_list if c.args[:2] == (CONTROL, 'stop_agent')}
+    assert code == 200 and stopped == {'1', '2'}
+
+
+def test_running_selection_reports_per_agent_errors(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    # Hidden peers are not installed agents and cannot be started or stopped; the batch still completes.
+    code, body = _call(vui, 'handle_platforms_agents_running', f'{P}/agents/-/running', 'DELETE',
+                       'include-hidden=true&regex=^(hid1|run1)$')
+    assert code == 200
+    assert body['run1']['error'] is None
+    assert 'not an installed agent' in body['hid1']['error']
+
+
+def test_enabled_selection_get(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', query='tag=*')
+    assert code == 200
+    assert body == {'run1': {'status': False, 'priority': None}, 'run2': {'status': True, 'priority': 50},
+                    'stopped1': {'status': False, 'priority': None}, 'stopped2': {'status': True, 'priority': 35}}
+
+
+def test_enabled_selection_put_and_delete(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', 'PUT', 'tag=st*&priority=10')
+    assert code == 200
+    assert body == {'stopped1': {'status': True, 'priority': 10, 'error': None},
+                    'stopped2': {'status': True, 'priority': 10, 'error': None}}
+    vui._rpc.assert_any_call(CONTROL, 'prioritize_agent', '3', '10', **EXT)
+    vui._rpc.assert_any_call(CONTROL, 'prioritize_agent', '4', '10', **EXT)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', 'DELETE', 'tag=r2')
+    assert code == 200 and body == {'run2': {'status': False, 'priority': None, 'error': None}}
+    vui._rpc.assert_any_call(CONTROL, 'prioritize_agent', '2', None, **EXT)
+
+
+def test_enabled_selection_put_rejects_bad_priority(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_enabled', f'{P}/agents/-/enabled', 'PUT', 'tag=*&priority=100')
+    assert code == 400 and 'Priority' in body['error']
+    assert not [c for c in vui._rpc.call_args_list if c.args[:2] == (CONTROL, 'prioritize_agent')]
+
+
+def test_status_selection_get(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_status', f'{P}/agents/-/status', query='tag=r*')
+    assert code == 200 and set(body) == {'run1', 'run2'}
+    assert body['run1']['running'] is True and body['run1']['pid'] == 10
+
+
+@pytest.mark.parametrize('identity, code, keys', [
+    ('run1', 200, {'peer', 'service_agent', 'connected', 'last_heartbeat', 'message'}),
+    ('stopped1', 400, {'error'}),                                          # not connected: no health entry
+])
+def test_agent_health(mock_platform_web_service, identity, code, keys):
+    vui = _vui_with_agents(mock_platform_web_service)
+    got, body = _call(vui, 'handle_platforms_agents_health', f'{P}/agents/{identity}/health')
+    assert got == code and set(body) == keys
+
+
+def test_agent_health_selection(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_health', f'{P}/agents/-/health', query='tag=*')
+    assert code == 200 and set(body) == {'run1', 'run2'}                 # stopped agents have no health entry
+    code, body = _call(vui, 'handle_platforms_agents_health', f'{P}/agents/-/health',
+                       query='include-hidden=true&regex=^hid')
+    assert code == 200 and set(body) == {'hid1', 'hid2'}
+
+
+def test_platform_health(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_health', f'{P}/health')
+    assert code == 200 and set(body) == {'run1', 'run2', 'hid1', 'hid2'}
+    code, body = _call(vui, 'handle_platforms_health', '/vui/platforms/nope/health')
+    assert code == 400
+
+
+def test_agents_list_tag_and_regex_filters(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='tag=r*')
+    assert code == 200 and set(body['links']) == {'run1', 'run2'}
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='agent-state=installed&tag=*')
+    assert set(body['links']) == {'run1', 'run2', 'stopped1', 'stopped2'}
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='agent-state=installed&regex=^stopped')
+    assert set(body['links']) == {'stopped1', 'stopped2'}
+    code, body = _call(vui, 'handle_platforms_agents', f'{P}/agents', query='regex=(')
+    assert code == 400
+
+
+def test_wildcard_agent_links_only_selection_routes(mock_platform_web_service):
+    vui = _vui_with_agents(mock_platform_web_service)
+    code, body = _call(vui, 'handle_platforms_agents_agent', f'{P}/agents/-')
+    assert code == 200 and set(body['links']) == {'running', 'enabled', 'status', 'health'}
+
+
+# ---------------------------------------------------------------- wildcard selection: regex validation
+
+@pytest.mark.parametrize('query, status', [('regex=(', '400'), ('regex=[', '400'), ('regex=run.*', '200'), ('', '200')])
+def test_wildcard_agent_route_validates_the_regex(mock_platform_web_service, query, status):
+    path = '/vui/platforms/my_instance_name/agents/-'
+    env = get_test_web_env(path, method='GET', query_string=query, HTTP_AUTHORIZATION='BEARER foo')
+    vui_endpoints = VUIEndpoints(mock_platform_web_service)
+    vui_endpoints.active_routes = ACTIVE_ROUTES
+    vui_endpoints._rpc = _mock_agents_rpc
+    response = vui_endpoints.handle_platforms_agents_agent(env, {})
+    check_response_codes(response, status)
+    if status == '400':
+        assert 'Invalid regex' in json.loads(response.response[0])['error']
+
+
+@pytest.mark.parametrize('query', ['regex=a{4294967296}', 'regex=' + '(' * 600 + 'a' + ')' * 600])
+def test_pathological_regexes_are_400_not_500(mock_platform_web_service, query):
+    for path in ('/vui/platforms/my_instance_name/agents/-', '/vui/platforms/my_instance_name/agents'):
+        env = get_test_web_env(path, method='GET', query_string=query, HTTP_AUTHORIZATION='BEARER foo')
+        vui_endpoints = VUIEndpoints(mock_platform_web_service)
+        vui_endpoints.active_routes = ACTIVE_ROUTES
+        vui_endpoints._rpc = _mock_agents_rpc
+        handler = (vui_endpoints.handle_platforms_agents_agent if path.endswith('/-')
+                   else vui_endpoints.handle_platforms_agents)
+        response = handler(env, {})
+        check_response_codes(response, '400')

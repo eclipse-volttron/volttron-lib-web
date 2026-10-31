@@ -118,12 +118,10 @@ class WebApplicationWrapper(object):
 
     def destroy_ws_endpoint(self, endpoint):
         clients = self.endpoint_clients.get(endpoint, [])
-        for identity, client in clients:
+        for identity, client in list(clients):
             client.close(reason="Endpoint closed.")
-        try:
-            del self.endpoint_clients[endpoint]
-        except KeyError:
-            pass
+        self.endpoint_clients.pop(endpoint, None)
+        self._wsregistry.pop(endpoint, None)
 
     def websocket_send(self, endpoint, message):
         _log.debug('Sending message to clients!')

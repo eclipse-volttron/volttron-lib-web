@@ -1,6 +1,6 @@
 This package provides web services for the VOLTTRON™ platform.
 This includes a RESTful API for interacting with the platform
-and utility pages for administration and certificate management.
+and a login page for administration.
 This library cannot be installed as a VOLTTRON agent is.
 Rather, it must be installed as a python package.
 
@@ -55,8 +55,8 @@ Ensure that it contains at least the following (where "my_instance_name" will be
 instance-name=my_instance_name
 ```
 
-The bind_web_address will typically be the IP address of the host on which the web service is installed.
-Setting the bind_web_address to 0.0.0.0 will bind to all interfaces on the machine. 127.0.0.1 or localhost
+The bind-web-address will typically be the IP address of the host on which the web service is installed.
+Setting the bind-web-address to 0.0.0.0 will bind to all interfaces on the machine. 127.0.0.1 or localhost
 can be used if it is not desired for the web services to be reachable by other hosts. The port number
 (after the colon) can be any port which is not bound to another service on the host mahcine.
 80 or 8080 are common ports when not using SSL. 443 and 8443 are common ports to use when using SSL.
@@ -64,7 +64,8 @@ can be used if it is not desired for the web services to be reachable by other h
 If using SSL, both web-ssl-cert and web-ssl-key are required
 and web-secret-key should not be included. If SSL is not desired,
 provide a web-secret-key instead and remove the lines for the web-ssl-cert
-and web-ssl-key. Any string can be used for the web-secret-key.
+and web-ssl-key. The web-secret-key signs the JSON web tokens issued to users and must be at least 32 bytes
+of random data (for example the output of `openssl rand -hex 32`).
 
 ### RPC allow-list
 
@@ -119,17 +120,25 @@ Full VOLTTRON documentation is available at [VOLTTRON Readthedocs](https://eclip
 
 
 ## Use
-Once the web service is installed, a web browser may be directed to the bind_web_address (http://192.168.1.101:8080
-in the case shown in the configuration) to reach an index page. An admin page is also available at the /admin path
-which can be used to create a username and password for authentication (http://192.168.1.101:8080/admin in the
-configuration shown above). This will create a file called web-users.json in the VOLTTRON_HOME directory.
+Once the web service is installed, a web browser may be directed to the bind-web-address (http://192.168.1.101:8080
+in the case shown in the configuration) to reach an index page. A login page for administrators is available at the
+/admin path (http://192.168.1.101:8080/admin in the configuration shown above).
+
+Web users are created from the command line, not from the browser. With the platform's environment active, run:
+
+```bash
+vctl web create-admin
+```
+
+This prompts for a username and password and writes the user, with the `admin` and `vui` groups, to the file
+web-users.json in the VOLTTRON_HOME directory. A running web service picks up new users without a restart.
 
 Additionally, the web service provides a RESTful API which can be used by other applications. Full documentation for
 the API is available on 
 [Readthedocs](https://eclipse-volttron.readthedocs.io/en/latest/external-docs/volttron-lib-web/index.html).
 
 Note that it is necessary for most API endpoints to have previously created a username and password for authentication
-by visiting the /admin page or by manually copying or creating a web-users.json file. Authentication can then be
+with `vctl web create-admin` or by manually copying or creating a web-users.json file. Authentication can then be
 performed by making a POST request to the /authenticate endpoint to obtain an access token. The access token should then
 be included in any subsequent requests to the API by passing the token as a BEARER token in an HTTP authorization
 header. A simple example of using the API from a python script to retrieve a json object containing API routes to all
@@ -146,7 +155,14 @@ platforms = requests.get(url=f'{bind_web_address}/vui/platforms',
                          headers={'Authorization': f'Bearer {access_token}'}
                          )
 print(platforms.json())
+
+# Log out: every token of this login is refused from now on.
+requests.delete(url=f'{bind_web_address}/authenticate',
+                headers={'Authorization': f'Bearer {tokens.json()["refresh_token"]}'})
 ```
+
+Requests that change state (anything other than GET) must carry the token in the `Authorization` header; the `Bearer`
+cookie set by the login page authenticates page loads and other GET requests only.
 
 ## Development
 

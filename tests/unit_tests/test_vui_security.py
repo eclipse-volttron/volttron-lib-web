@@ -101,19 +101,19 @@ class TestRpcAllowListParsing:
 
     def test_web_service_config_parses_the_ini_option(self):
         config = WebServiceConfig(bind_web_address='http://127.0.0.1:8080', messagebus='zmq',
-                                  web_secret_key='unit-test-secret-key', rpc_allow_list=INI_ALLOW_LIST)
+                                  web_secret_key='unit-test-secret-key-that-is-long-enough-for-hs256', rpc_allow_list=INI_ALLOW_LIST)
         assert config.rpc_allow_list == RpcProxyPolicy(INI_ALLOW_LIST)
 
     def test_web_service_config_defaults_to_closed(self):
         config = WebServiceConfig(bind_web_address='http://127.0.0.1:8080', messagebus='zmq',
-                                  web_secret_key='unit-test-secret-key')
+                                  web_secret_key='unit-test-secret-key-that-is-long-enough-for-hs256')
         assert config.rpc_allow_list.entries == ()
         assert not config.rpc_allow_list.is_allowed(PLATFORM, 'my.agent', 'anything')
 
     def test_web_service_config_rejects_malformed_option(self):
         with pytest.raises(ValueError, match='rpc-allow-list'):
             WebServiceConfig(bind_web_address='http://127.0.0.1:8080', messagebus='zmq',
-                             web_secret_key='unit-test-secret-key', rpc_allow_list='no methods here')
+                             web_secret_key='unit-test-secret-key-that-is-long-enough-for-hs256', rpc_allow_list='no methods here')
 
 
 class TestRpcProxyPolicyMatching:
@@ -158,7 +158,7 @@ class TestRpcProxyPolicyMatching:
     @pytest.mark.parametrize("peer, method", [
         (AUTH, 'create_or_merge_agent_authz'), (AUTH, 'list_credentials'),
         (PLATFORM_WEB, 'register_path_route'), (PLATFORM_WEB, 'get_user_claims'),
-        (CONFIGURATION_STORE, 'delete_store'), (CONFIGURATION_STORE, 'manage_list_stores'),
+        (CONFIGURATION_STORE, 'delete_store'), (CONFIGURATION_STORE, 'list_stores'),
         (PLATFORM_DRIVER, 'set_point'), (PLATFORM_DRIVER, 'get_point'),
         (CONTROL, 'install_agent'), (CONTROL, 'remove_agent'), (CONTROL, 'shutdown'), (CONTROL, 'stop_platform'),
         (CONTROL, 'clear_status'), (CONTROL, 'prioritize_agent'), (CONTROL, 'tag_agent'),
@@ -171,6 +171,21 @@ class TestRpcProxyPolicyMatching:
     def test_denied_peers_permit_nothing(self, peer):
         assert not OPEN.permits_any(PLATFORM, peer)
         assert OPEN.filter_methods(PLATFORM, peer, ['get_point']) == []
+
+    def test_configured_driver_identity_is_denied(self):
+        policy = RpcProxyPolicy('*: *', denied_peers={'my.driver'})
+        assert policy.is_denied('my.driver')
+        assert not policy.is_allowed(PLATFORM, 'my.driver', 'get_point')
+        assert not policy.permits_any(PLATFORM, 'my.driver')
+        assert policy.is_denied(PLATFORM_DRIVER)  # the default identity stays denied too
+
+    def test_web_service_config_denies_the_configured_driver(self):
+        config = WebServiceConfig(bind_web_address='http://127.0.0.1:8080', messagebus='zmq',
+                                  web_secret_key='unit-test-secret-key-that-is-long-enough-for-hs256',
+                                  rpc_allow_list='*: *', driver_vip_identity='my.driver')
+        assert not config.rpc_allow_list.is_allowed(PLATFORM, 'my.driver', 'set_point')
+        assert not config.rpc_allow_list.is_allowed(PLATFORM, PLATFORM_DRIVER, 'set_point')
+        assert config.rpc_allow_list.is_allowed(PLATFORM, 'my.agent', 'anything')
 
     def test_open_allow_list_reaches_everything_else(self):
         assert OPEN.is_allowed(PLATFORM, CONTROL, 'status_agents')
@@ -190,7 +205,7 @@ class TestRpcProxyEndpoints:
         vui._rpc.assert_not_called()
 
     @pytest.mark.parametrize("peer, method", [(AUTH, 'create_or_merge_agent_authz'), (PLATFORM_WEB, 'get_user_claims'),
-                                              (CONFIGURATION_STORE, 'manage_delete_store'),
+                                              (CONFIGURATION_STORE, 'delete_config'),
                                               (PLATFORM_DRIVER, 'set_point'), (CONTROL, 'shutdown'),
                                               (CONTROL, 'install_agent')])
     def test_denied_method_call_is_403_and_not_forwarded(self, vui, peer, method):

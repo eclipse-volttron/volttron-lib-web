@@ -32,7 +32,7 @@ from deepdiff import DeepDiff
 from urllib.parse import urlencode
 
 from volttron.services.web import get_user_claim_from_bearer
-from volttron.services.web.admin_endpoints import AdminEndpoints
+from volttron.services.web.user_manager import add_web_user
 from volttron.services.web.authenticate_endpoint import AuthenticateEndpoints
 from volttron.utils.certs import CertWrapper
 from volttron.utils.messagebus import store_message_bus_config
@@ -98,9 +98,8 @@ def set_test_admin():
     authorize_ep = MockAuthenticateEndpoints(web_secret_key=get_random_key())
     authorize_ep.set_access_token_timeout(0.1)
     authorize_ep.set_refresh_token_timeout(0.2)
-    AdminEndpoints().add_user("test_admin", "Pass123", groups=['admin'])
+    add_web_user("test_admin", "Pass123", groups=['admin'])
     test_user = {"username": "test_admin", "password": "Pass123"}
-    gevent.sleep(1)
     return authorize_ep, test_user
 
 
@@ -196,11 +195,23 @@ def test_authenticate_delete_request():
         env = get_test_web_env('/authenticate', method='POST')
         response = authorize_ep.handle_authenticate(env, test_user)
 
-        # Touch Delete endpoint
+        tokens = json.loads(response.response[0].decode('utf-8'))
+
+        # Delete without a token revokes nothing.
         env = get_test_web_env('/authenticate', method='DELETE')
         response = authorize_ep.handle_authenticate(env, test_user)
         assert ('Content-Type', 'application/json') in response.headers.items()
-        assert '501 NOT IMPLEMENTED' in response.status
+        assert '401 UNAUTHORIZED' in response.status
+
+        # Delete with the refresh token logs the session out: the refresh token no longer renews.
+        env = get_test_web_env('/authenticate', method='DELETE')
+        env["HTTP_AUTHORIZATION"] = "BEARER " + tokens['refresh_token']
+        response = authorize_ep.handle_authenticate(env, None)
+        assert '204 NO CONTENT' in response.status
+        env = get_test_web_env('/authenticate', method='PUT')
+        env["HTTP_AUTHORIZATION"] = "BEARER " + tokens['refresh_token']
+        response = authorize_ep.handle_authenticate(env, data={})
+        assert '401 UNAUTHORIZED' in response.status
 
 
 def test_no_private_key_or_passphrase():
@@ -235,8 +246,7 @@ def test_authenticate_endpoint(scheme):
         # TODO: Save kwargs to service_config.yml
         user = 'bogart'
         passwd = 'cat'
-        adminep = AdminEndpoints()
-        adminep.add_user(user, passwd)
+        add_web_user(user, passwd)
 
         env = get_test_web_env('/authenticate', method='POST')
 
@@ -447,3 +457,57 @@ def test_vo003_jwt_encode_returns_str():
     decoded = jwt.decode(token, secret, algorithms=["HS256"])
     assert decoded["sub"] == "carol"
     assert decoded["groups"] == ["viewer"]
+
+# ---------------------------------------------------------------- malformed login and renewal input
+
+@pytest.fixture
+def admin_endpoints():
+    """(endpoints, user) in a fresh VOLTTRON_HOME; the file observer is stopped afterwards (inotify handles are finite)."""
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        authorize_ep, test_user = set_test_admin()
+        try:
+            yield authorize_ep, test_user
+        finally:
+            authorize_ep._observer.stop()
+
+
+def _tokens(authorize_ep, test_user):
+    return json.loads(authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'),
+                                                       test_user).response[0])
+
+
+@pytest.mark.parametrize('data', [{"username": ["a"], "password": "x"}, {"username": "a", "password": ["x"]},
+                                  {"username": 5, "password": "x"}, {"username": {"a": 1}, "password": "x"},
+                                  "text", ["a", "b"], 7, None])
+def test_login_refuses_non_string_credentials_and_non_object_bodies(admin_endpoints, data):
+    authorize_ep, _ = admin_endpoints
+    response = authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'), data)
+    assert '401' in response.status
+    assert 'access_token' not in response.response[0].decode('utf-8')
+
+
+@pytest.mark.parametrize('data', ["text", ["a"], 7, True])
+def test_renew_refuses_a_body_that_is_not_a_json_object(admin_endpoints, data):
+    authorize_ep, test_user = admin_endpoints
+    tokens = _tokens(authorize_ep, test_user)
+    env = get_test_web_env('/authenticate', method='PUT', HTTP_AUTHORIZATION=f"BEARER {tokens['refresh_token']}")
+    response = authorize_ep.handle_authenticate(env, data)
+    assert '401' in response.status
+
+
+@pytest.mark.parametrize('data', [{}, None, "", {"current_access_token": "x"}])
+def test_renew_accepts_an_empty_or_object_body(admin_endpoints, data):
+    authorize_ep, test_user = admin_endpoints
+    tokens = _tokens(authorize_ep, test_user)
+    env = get_test_web_env('/authenticate', method='PUT', HTTP_AUTHORIZATION=f"BEARER {tokens['refresh_token']}")
+    response = authorize_ep.handle_authenticate(env, data)
+    assert '200' in response.status, response.response
+
+
+@pytest.mark.parametrize('data', [{"username": "test_admin", "password": "x" * 1025},
+                                  {"username": "u" * 257, "password": "Pass123"}])
+def test_login_refuses_overlong_credentials(admin_endpoints, data):
+    authorize_ep, _ = admin_endpoints
+    response = authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'), data)
+    assert '401' in response.status
