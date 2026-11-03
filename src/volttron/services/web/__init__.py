@@ -22,6 +22,7 @@
 # ===----------------------------------------------------------------------===
 # }}}
 
+from functools import lru_cache
 from http.cookies import SimpleCookie
 import logging
 
@@ -77,6 +78,53 @@ def get_authorization_bearer(env):
     return parts[1]
 
 
+# PyJWT pairs each ECDSA algorithm with exactly one curve.
+_EC_CURVE_ALGORITHMS = {'secp256r1': 'ES256', 'secp384r1': 'ES384', 'secp521r1': 'ES512'}
+
+
+def jwt_algorithm_for_key(key):
+    """
+    The JWS algorithm that signs or verifies with ``key``: ``RS256`` for an RSA key, ``ES256``/``ES384``/``ES512``
+    for an EC key on P-256/P-384/P-521 and ``EdDSA`` for an Ed25519 or Ed448 key.
+
+    ``key`` is a PEM private or public key as bytes or str (what ``CertWrapper`` returns for the web TLS files) or a
+    ``cryptography`` key object. Any other key raises ``ValueError`` naming the type, so a ``web-ssl-key`` the
+    service cannot sign tokens with is refused at start-up instead of at the first login.
+    """
+    if isinstance(key, (bytes, str)):
+        return _jwt_algorithm_for_pem(key if isinstance(key, bytes) else key.encode('utf-8'))
+    return _jwt_algorithm_for_key_object(key)
+
+
+@lru_cache(maxsize=16)
+def _jwt_algorithm_for_pem(pem: bytes):
+    # The same PEM is checked on every token issue and verification; parsing it once is enough.
+    from cryptography.hazmat.primitives import serialization
+    try:
+        key = serialization.load_pem_private_key(pem, password=None)
+    except ValueError:
+        try:
+            key = serialization.load_pem_public_key(pem)
+        except ValueError as e:
+            raise ValueError(f"Not a PEM private or public key: {e}") from None
+    return _jwt_algorithm_for_key_object(key)
+
+
+def _jwt_algorithm_for_key_object(key):
+    from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, rsa
+    if isinstance(key, (rsa.RSAPrivateKey, rsa.RSAPublicKey)):
+        return 'RS256'
+    if isinstance(key, (ec.EllipticCurvePrivateKey, ec.EllipticCurvePublicKey)):
+        algorithm = _EC_CURVE_ALGORITHMS.get(key.curve.name)
+        if algorithm is None:
+            raise ValueError(f"EC key on curve {key.curve.name} cannot sign JWTs; use P-256, P-384 or P-521")
+        return algorithm
+    if isinstance(key, (ed25519.Ed25519PrivateKey, ed25519.Ed25519PublicKey,
+                        ed448.Ed448PrivateKey, ed448.Ed448PublicKey)):
+        return 'EdDSA'
+    raise ValueError(f"{type(key).__name__} cannot sign JWTs; use an RSA, EC (P-256/P-384/P-521) or Ed25519 key")
+
+
 def get_user_claim_from_bearer(bearer, web_secret_key=None, tls_public_key=None):
     if web_secret_key is None and tls_public_key is None:
         raise ValueError("web_secret_key or tls_public_key must be set")
@@ -87,10 +135,10 @@ def get_user_claim_from_bearer(bearer, web_secret_key=None, tls_public_key=None)
         algorithm = 'HS256'
         pubkey = web_secret_key
     else:
-        algorithm = 'RS256'
+        # The algorithm follows the key type so that the same key the server uses for TLS can sign tokens whether
+        # it is RSA or EC; the list still holds exactly one entry, so a token naming any other algorithm is rejected.
+        algorithm = jwt_algorithm_for_key(tls_public_key)
         pubkey = tls_public_key
-        # if isinstance(tls_public_key, str):
-        #     pubkey = CertWrapper.load_cert(tls_public_key)
 
     claims = jwt.decode(bearer, pubkey, algorithms=[algorithm])
     return claims

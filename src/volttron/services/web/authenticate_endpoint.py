@@ -38,6 +38,7 @@ from werkzeug import Response
 
 from volttron.utils.context import ClientContext
 from volttron.utils.filewatch import VolttronHomeFileReloader
+from volttron.services.web import jwt_algorithm_for_key
 from volttron.utils.persistance import PersistentDict
 from .token_revocation import (RevokedSessions, REVOKED_SESSIONS_FILE, SESSION_CLAIM, new_session_id,
                                session_id)
@@ -85,6 +86,9 @@ class AuthenticateEndpoints(object):
             raise ValueError("Must have either ssl_private_key or web_secret_key specified!")
         if self._tls_private_key is not None and self._web_secret_key is not None:
             raise ValueError("Must use either ssl_private_key or web_secret_key not both!")
+        # Chosen by key type (RS256 for RSA, ES256 and friends for EC) and checked here so that a TLS key the
+        # service cannot sign tokens with stops the start-up rather than the first login.
+        self._tls_algorithm = jwt_algorithm_for_key(tls_private_key) if tls_private_key is not None else None
         if revoked_sessions is None:
             revoked_sessions = RevokedSessions(os.path.join(ClientContext.get_volttron_home(),
                                                             REVOKED_SESSIONS_FILE))
@@ -218,8 +222,10 @@ class AuthenticateEndpoints(object):
         claims['nbf'] = now
         claims['exp'] = now + timedelta(minutes=self.access_token_timeout)
         claims['grant_type'] = 'access_token'
-        algorithm = 'RS256' if self._tls_private_key is not None else 'HS256'
-        encode_key = self._tls_private_key if algorithm == 'RS256' else self._web_secret_key
+        if self._tls_private_key is not None:
+            algorithm, encode_key = self._tls_algorithm, self._tls_private_key
+        else:
+            algorithm, encode_key = 'HS256', self._web_secret_key
         access_token = jwt.encode(claims, encode_key, algorithm=algorithm)
         claims['exp'] = now + timedelta(minutes=self.refresh_token_timeout)
         claims['grant_type'] = 'refresh_token'
