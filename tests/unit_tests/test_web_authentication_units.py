@@ -511,3 +511,97 @@ def test_login_refuses_overlong_credentials(admin_endpoints, data):
     authorize_ep, _ = admin_endpoints
     response = authorize_ep.handle_authenticate(get_test_web_env('/authenticate', method='POST'), data)
     assert '401' in response.status
+
+
+# ---------------------------------------------------------------------------
+# The TLS key that signs tokens may be RSA or EC: the algorithm follows the key.
+# ---------------------------------------------------------------------------
+
+def _tls_keypair(kind):
+    """A fresh private key of the given kind and its public key, both as PEM bytes like CertWrapper returns."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
+    key = {
+        "rsa": lambda: rsa.generate_private_key(public_exponent=65537, key_size=2048),
+        "p256": lambda: ec.generate_private_key(ec.SECP256R1()),
+        "p384": lambda: ec.generate_private_key(ec.SECP384R1()),
+        "p521": lambda: ec.generate_private_key(ec.SECP521R1()),
+        "ed25519": ed25519.Ed25519PrivateKey.generate,
+        "secp256k1": lambda: ec.generate_private_key(ec.SECP256K1()),
+    }[kind]()
+    private_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption())
+    public_pem = key.public_key().public_bytes(serialization.Encoding.PEM,
+                                               serialization.PublicFormat.SubjectPublicKeyInfo)
+    return private_pem, public_pem
+
+
+@pytest.mark.parametrize("kind, expected", [("rsa", "RS256"), ("p256", "ES256"), ("p384", "ES384"),
+                                            ("p521", "ES512"), ("ed25519", "EdDSA")])
+def test_jwt_algorithm_follows_key_type(kind, expected):
+    from volttron.services.web import jwt_algorithm_for_key
+    private_pem, public_pem = _tls_keypair(kind)
+    assert jwt_algorithm_for_key(private_pem) == expected
+    assert jwt_algorithm_for_key(public_pem) == expected
+    assert jwt_algorithm_for_key(public_pem.decode("utf-8")) == expected
+
+
+def test_jwt_algorithm_rejects_unusable_keys():
+    from volttron.services.web import jwt_algorithm_for_key
+    private_pem, _ = _tls_keypair("secp256k1")    # PyJWT has no ECDSA algorithm for this curve
+    with pytest.raises(ValueError, match="secp256k1"):
+        jwt_algorithm_for_key(private_pem)
+    with pytest.raises(ValueError, match="Not a PEM"):
+        jwt_algorithm_for_key(b"not a key")
+
+
+def test_unusable_tls_key_is_refused_at_construction():
+    """A web-ssl-key the service cannot sign with must fail the start-up, not the first login."""
+    private_pem, public_pem = _tls_keypair("secp256k1")
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        with pytest.raises(ValueError, match="secp256k1"):
+            AuthenticateEndpoints(tls_private_key=private_pem, tls_public_key=public_pem)
+
+
+@pytest.mark.parametrize("kind, expected", [("rsa", "RS256"), ("p256", "ES256")])
+def test_tls_login_round_trip_for_key_type(kind, expected):
+    """Login, verification and renewal work with the TLS key whatever its type, and the tokens name its algorithm."""
+    private_pem, public_pem = _tls_keypair(kind)
+    volttron_home = create_volttron_home()
+    with with_os_environ({'VOLTTRON_HOME': volttron_home}):
+        authorize_ep = AuthenticateEndpoints(tls_private_key=private_pem, tls_public_key=public_pem)
+        add_web_user("test_admin", "Pass123", groups=['admin'])
+        env = get_test_web_env('/authenticate', method='POST')
+        response = authorize_ep.handle_authenticate(env, {"username": "test_admin", "password": "Pass123"})
+        assert '200 OK' in response.status
+        tokens = json.loads(response.response[0].decode('utf-8'))
+        for name in ("access_token", "refresh_token"):
+            assert jwt.get_unverified_header(tokens[name])["alg"] == expected
+            claims = get_user_claim_from_bearer(tokens[name], tls_public_key=public_pem)
+            assert claims["sub"] == "test_admin"
+            assert claims["grant_type"] == name
+
+        env = get_test_web_env('/authenticate', method='PUT')
+        env["HTTP_AUTHORIZATION"] = "BEARER " + tokens["refresh_token"]
+        response = authorize_ep.handle_authenticate(env, data={})
+        assert '200 OK' in response.status
+        renewed = json.loads(response.response[0].decode('utf-8'))["access_token"]
+        assert get_user_claim_from_bearer(renewed, tls_public_key=public_pem)["sub"] == "test_admin"
+
+
+def test_ec_token_from_other_key_or_algorithm_is_rejected():
+    """The verifier allows exactly the algorithm of its own key: another EC key or a header naming RS256 fails."""
+    import base64
+    private_pem, public_pem = _tls_keypair("p256")
+    other_private_pem, _ = _tls_keypair("p256")
+    claims = {"sub": "attacker", "groups": ["admin"]}
+    with pytest.raises(jwt.PyJWTError):
+        get_user_claim_from_bearer(jwt.encode(claims, other_private_pem, algorithm="ES256"), tls_public_key=public_pem)
+
+    def _b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+    header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    payload = _b64url(json.dumps(claims).encode())
+    with pytest.raises(jwt.PyJWTError):
+        get_user_claim_from_bearer(f"{header}.{payload}.", tls_public_key=public_pem)
